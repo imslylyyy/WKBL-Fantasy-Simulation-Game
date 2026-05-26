@@ -490,6 +490,13 @@ def login_existing_user(manager_name: str, password: str):
     st.session_state.is_admin = False
     st.session_state.app_phase = "main"
     st.session_state.page = st.session_state.get("page") or "Home"
+    # If this manager was absent while public games were completed, those games
+    # must become 0-point missed games instead of remaining playable.
+    try:
+        apply_missed_games_to_session(players, games_2025_26)
+        save_current_user_progress()
+    except Exception:
+        pass
     return True, "로그인되었습니다."
 
 def register_new_user(players_list, games_list, manager_name: str, password: str):
@@ -576,7 +583,7 @@ def participant_result_records(reference_item: dict, include_current=True):
         records.append({
             "team": manager,
             "points": round(float(points or 0.0), 2),
-            "status": "완료",
+            "status": "미참가/0점" if matched.get("missed") else "완료",
             "lineup": lineup,
             "updated": rec.get("updated_at", ""),
         })
@@ -670,6 +677,128 @@ def public_game_status(game_index: int, at: datetime | None = None):
         "can_reveal": True,
     }
 
+
+
+def public_completed_game_count(games_list, at: datetime | None = None) -> int:
+    """How many public games have already reached the result-open time."""
+    at = at or now_kst()
+    count = 0
+    for i, _game in enumerate(games_list or []):
+        if at >= public_game_result_time(i):
+            count = i + 1
+        else:
+            break
+    return min(count, len(games_list or []))
+
+
+def _history_has_game(history, game: dict) -> bool:
+    reference = {
+        "game_id": game.get("game_id", ""),
+        "date": game.get("date", ""),
+        "time": game.get("time", ""),
+        "gameweek": game.get("gameweek", ""),
+        "day": game.get("day", ""),
+        "match": game_match_label(game, show_score=True),
+    }
+    return any(_same_result_game(item, reference) for item in history if isinstance(item, dict))
+
+
+def missed_game_record(game: dict, manager_name: str) -> dict:
+    """A zero-point record for games a late/absent manager missed."""
+    return {
+        "game_id": game.get("game_id", ""),
+        "date": game.get("date", ""),
+        "time": game.get("time", ""),
+        "gameweek": game.get("gameweek", ""),
+        "day": game.get("day", ""),
+        "match": game_match_label(game, show_score=True),
+        "team_points": {manager_name: 0.0},
+        "lineups": {
+            manager_name: {
+                "captain": "미제출",
+                "starting": [],
+                "bench": [],
+                "status": "미참가/0점",
+            }
+        },
+        "allstar_applied": False,
+        "price_changes": [],
+        "missed": True,
+        "missed_reason": "늦은 등록 또는 라인업 미제출로 0점 처리",
+    }
+
+
+def set_roster_for_game_index(players_list, games_list, game_index: int, seed: int | None = None):
+    """Prepare an editable roster from the current target game's two WKBL teams."""
+    if not games_list or game_index >= len(games_list):
+        pool = players_list
+        game_id = ""
+    else:
+        game = games_list[game_index]
+        allowed = game_allowed_teams(game)
+        pool = [p for p in players_list if not allowed or p.get("team_2025_26") in allowed]
+        game_id = str(game.get("game_id", ""))
+    if seed is None:
+        seed = random.randint(100, 9999)
+    st.session_state.user_roster_keys = generate_auto_roster(pool, seed=seed)
+    st.session_state.roster_working_keys = list(st.session_state.user_roster_keys)
+    st.session_state.user_starting_keys = auto_starting_keys(
+        st.session_state.user_roster_keys,
+        players_list,
+        st.session_state.get("user_formation", "2 Back Court / 3 Front Court"),
+    )
+    st.session_state.user_captain_key = st.session_state.user_starting_keys[0] if st.session_state.user_starting_keys else None
+    st.session_state.pack_game_id = game_id
+    st.session_state.pack_back_keys = []
+    st.session_state.pack_front_keys = []
+    st.session_state.pack_back_opened = False
+    st.session_state.pack_front_opened = False
+    st.session_state.main_flow_stage = "pack_lobby"
+
+
+def apply_missed_games_to_session(players_list, games_list, target_index: int | None = None, reset_roster_if_advanced: bool = True) -> int:
+    """Mark every already-result-open game before target_index as 0 if this manager has no record.
+
+    This prevents late registrants from back-playing completed games.
+    """
+    manager = st.session_state.get("simulation_user_team") or st.session_state.get("manager_name", "")
+    if not manager:
+        return 0
+    target_index = public_completed_game_count(games_list) if target_index is None else int(target_index)
+    target_index = max(0, min(target_index, len(games_list or [])))
+
+    history = st.session_state.get("simulation_history", [])
+    if not isinstance(history, list):
+        history = []
+    added = 0
+    for i in range(target_index):
+        game = games_list[i]
+        if not _history_has_game(history, game):
+            history.append(missed_game_record(game, manager))
+            added += 1
+    st.session_state.simulation_history = history
+
+    current_index = int(st.session_state.get("simulation_game_index", 0) or 0)
+    if current_index < target_index:
+        st.session_state.simulation_game_index = target_index
+        st.session_state.simulation_game_no = target_index + 1
+        if target_index < len(games_list or []):
+            st.session_state.current_transfer_gameweek = games_list[target_index].get(
+                "gameweek", st.session_state.get("current_transfer_gameweek", 1)
+            )
+            if reset_roster_if_advanced:
+                set_roster_for_game_index(players_list, games_list, target_index)
+        else:
+            st.session_state.main_flow_stage = "locked_view"
+
+    scores = st.session_state.get("simulation_team_scores", {})
+    if not isinstance(scores, dict):
+        scores = {}
+    scores.setdefault(manager, 0.0)
+    st.session_state.simulation_team_scores = scores
+    update_league_table_from_scores()
+    return added
+
 def user_fantasy_team_name():
     return st.session_state.get("manager_name", "나의 팀") or "나의 팀"
 
@@ -720,20 +849,20 @@ def begin_game_session(players_list, games_list, manager_name):
     st.session_state.fantasy_team_names = [st.session_state.manager_name] + generate_ai_team_names(5)
     st.session_state.page = "Home"
 
-    # First gameday roster is generated only from the first game's two real WKBL teams.
-    if games_list:
-        start_allowed = game_allowed_teams(games_list[0])
-        start_pool = [p for p in players_list if not start_allowed or p.get("team_2025_26") in start_allowed]
-    else:
-        start_pool = players_list
-
-    st.session_state.user_roster_keys = generate_auto_roster(start_pool, seed=random.randint(100, 9999))
-    st.session_state.roster_working_keys = list(st.session_state.user_roster_keys)
-    st.session_state.user_starting_keys = auto_starting_keys(st.session_state.user_roster_keys, players_list, st.session_state.user_formation)
-    st.session_state.user_captain_key = st.session_state.user_starting_keys[0] if st.session_state.user_starting_keys else None
-
     reset_simulation_runtime(players_list)
     start_simulation(st.session_state.manager_name)
+
+    # Public league rule: a manager who registers late cannot play completed games.
+    # Those earlier games are immediately saved as missed/0-point results, and the
+    # manager starts from the current public game.
+    target_index = public_completed_game_count(games_list)
+    apply_missed_games_to_session(players_list, games_list, target_index=target_index, reset_roster_if_advanced=False)
+    if target_index < len(games_list or []):
+        set_roster_for_game_index(players_list, games_list, target_index)
+    else:
+        set_roster_for_game_index(players_list, games_list, 0)
+        st.session_state.main_flow_stage = "locked_view"
+
     initialize_ai_managers(players_list)
     update_league_table_from_scores()
     st.session_state.simulation_started = True
@@ -1960,6 +2089,16 @@ def render_dashboard_home(players_list, games_list):
     with music_right:
         render_music_controls()
 
+    nav_a, nav_b, nav_c = st.columns([1, 1, 4])
+    with nav_a:
+        if st.button("경기 일정", key="dash_schedule", use_container_width=True):
+            st.session_state.page = "Schedule"
+            st.rerun()
+    with nav_b:
+        if st.button("가격 확인", key="dash_prices", use_container_width=True):
+            st.session_state.page = "Prices"
+            st.rerun()
+
     st.markdown(f"""
     <div class="v21-home" style="{bg_style}">
       <div class="v21-topbar">
@@ -1972,16 +2111,6 @@ def render_dashboard_home(players_list, games_list):
       </div>
     </div>
     """, unsafe_allow_html=True)
-
-    nav_a, nav_b, nav_c = st.columns([1, 1, 4])
-    with nav_a:
-        if st.button("경기 일정", key="dash_schedule", use_container_width=True):
-            st.session_state.page = "Schedule"
-            st.rerun()
-    with nav_b:
-        if st.button("가격 확인", key="dash_prices", use_container_width=True):
-            st.session_state.page = "Prices"
-            st.rerun()
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
