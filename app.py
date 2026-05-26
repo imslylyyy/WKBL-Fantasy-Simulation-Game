@@ -3,19 +3,23 @@ import streamlit as st
 import streamlit.components.v1 as components
 import csv
 import base64
+import json
+import os
+import hmac
+import hashlib
 import mimetypes
 import math
 import re
 import random
 import string
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import calendar
 import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v23.0 / dashboard polish + schedule + price chart + lineup history"
+APP_VERSION = "Final Version v24.0 / subscriber login + saved progress + timed results"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -62,6 +66,16 @@ WKBL_LOGO_PATH = ASSET_DIR / "wkbl_logo.png"
 SPLASH_BG_PATH = ASSET_DIR / "splash_bg.jpg"
 BGM_AUDIO_PATH = ASSET_DIR / "audio" / "bgm.mp3"
 
+# Public subscriber mode settings.
+# In this prototype, user progress is stored in a local JSON file.
+# For a real public deployment with many channel subscribers, move this to Supabase/Firebase/PostgreSQL.
+DATA_DIR = Path("data")
+USER_DB_PATH = DATA_DIR / "wkbl_fantasy_users.json"
+KST = timezone(timedelta(hours=9))
+PUBLIC_FIRST_GAME_START = datetime(2026, 5, 27, 6, 30, tzinfo=KST)
+PUBLIC_RESULT_DELAY = timedelta(hours=3)
+PUBLIC_GAME_INTERVAL = timedelta(days=1)
+
 ROSTER_SIZE = 10
 ROSTER_BACK_COUNT = 5
 ROSTER_FRONT_COUNT = 5
@@ -87,6 +101,12 @@ if "app_phase" not in st.session_state:
 
 if "manager_name" not in st.session_state:
     st.session_state.manager_name = ""
+
+if "current_user_id" not in st.session_state:
+    st.session_state.current_user_id = ""
+
+if "login_mode" not in st.session_state:
+    st.session_state.login_mode = "login_or_register"
 
 if "fantasy_team_names" not in st.session_state:
     st.session_state.fantasy_team_names = []
@@ -160,6 +180,218 @@ def get_fantasy_teams():
         return teams
     # Safe fallback before the user starts the game.
     return ["나의 팀"] + generate_ai_team_names(5)
+
+def user_key_from_name(name: str) -> str:
+    return re.sub(r"\s+", " ", clean(name)).casefold()
+
+def ensure_data_dir():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+def load_user_db():
+    ensure_data_dir()
+    if not USER_DB_PATH.exists():
+        return {"users": {}}
+    try:
+        data = json.loads(USER_DB_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or "users" not in data:
+            return {"users": {}}
+        if not isinstance(data["users"], dict):
+            data["users"] = {}
+        return data
+    except Exception:
+        return {"users": {}}
+
+def save_user_db(db):
+    ensure_data_dir()
+    tmp = USER_DB_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(USER_DB_PATH)
+
+def hash_password(password: str, salt_hex: str | None = None):
+    if salt_hex is None:
+        salt = os.urandom(16)
+    else:
+        salt = bytes.fromhex(salt_hex)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
+    return salt.hex(), digest.hex()
+
+def verify_password(password: str, salt_hex: str, password_hash: str) -> bool:
+    _, test_hash = hash_password(password, salt_hex)
+    return hmac.compare_digest(test_hash, password_hash)
+
+SAVE_STATE_KEYS = [
+    "manager_name", "fantasy_team_names", "simulation_started", "simulation_user_team",
+    "simulation_game_no", "simulation_league", "user_roster_keys", "roster_working_keys",
+    "user_starting_keys", "user_captain_key", "user_formation", "user_transfers",
+    "user_transfer_penalty_points", "user_transfer_log", "current_transfer_gameweek",
+    "chip_captain_active", "chip_allstar_available", "chip_allstar_active",
+    "chip_allstar_active_gameweek", "chip_allstar_used_game_id", "chip_allstar_used_label",
+    "chip_allstar_used_gameweeks", "chip_allstar_used_labels_by_gw", "simulation_game_index",
+    "simulation_history", "simulation_team_scores", "simulation_team_rosters",
+    "simulation_team_starting", "simulation_team_captains", "simulation_ai_ready",
+    "price_history", "market_state", "auto_roster_seed", "pack_game_id", "pack_back_keys",
+    "pack_front_keys", "pack_back_opened", "pack_front_opened", "main_flow_stage",
+    "bgm_enabled", "bgm_volume", "page",
+]
+
+def _jsonable(value):
+    try:
+        json.dumps(value, ensure_ascii=False)
+        return value
+    except Exception:
+        return str(value)
+
+def snapshot_progress():
+    return {key: _jsonable(st.session_state.get(key)) for key in SAVE_STATE_KEYS if key in st.session_state}
+
+def restore_progress(progress: dict):
+    if not isinstance(progress, dict):
+        return
+    for key, value in progress.items():
+        if key in SAVE_STATE_KEYS:
+            st.session_state[key] = value
+    st.session_state.app_phase = "main"
+
+def create_or_update_user_record(manager_name: str, password: str, progress: dict | None = None):
+    db = load_user_db()
+    user_id = user_key_from_name(manager_name)
+    salt, pw_hash = hash_password(password)
+    db["users"][user_id] = {
+        "manager_name": manager_name.strip(),
+        "salt": salt,
+        "password_hash": pw_hash,
+        "created_at": datetime.now(KST).isoformat(),
+        "updated_at": datetime.now(KST).isoformat(),
+        "progress": progress or {},
+    }
+    save_user_db(db)
+    return user_id
+
+def save_current_user_progress():
+    user_id = st.session_state.get("current_user_id", "")
+    if not user_id:
+        return
+    db = load_user_db()
+    rec = db.get("users", {}).get(user_id)
+    if not rec:
+        return
+    rec["manager_name"] = st.session_state.get("manager_name", rec.get("manager_name", ""))
+    rec["updated_at"] = datetime.now(KST).isoformat()
+    rec["progress"] = snapshot_progress()
+    db["users"][user_id] = rec
+    save_user_db(db)
+
+def login_existing_user(manager_name: str, password: str):
+    user_id = user_key_from_name(manager_name)
+    db = load_user_db()
+    rec = db.get("users", {}).get(user_id)
+    if not rec:
+        return False, "아직 등록되지 않은 감독명입니다. 같은 이름과 비밀번호로 새로 등록할 수 있습니다."
+    if not verify_password(password, rec.get("salt", ""), rec.get("password_hash", "")):
+        return False, "비밀번호가 맞지 않습니다."
+    st.session_state.current_user_id = user_id
+    st.session_state.manager_name = rec.get("manager_name", manager_name)
+    restore_progress(rec.get("progress", {}))
+    st.session_state.app_phase = "main"
+    st.session_state.page = st.session_state.get("page") or "Home"
+    return True, "로그인되었습니다."
+
+def register_new_user(players_list, games_list, manager_name: str, password: str):
+    user_id = user_key_from_name(manager_name)
+    db = load_user_db()
+    if user_id in db.get("users", {}):
+        return False, "이미 존재하는 감독명입니다. 기존 비밀번호로 로그인해 주세요."
+    st.session_state.current_user_id = user_id
+    begin_game_session(players_list, games_list, manager_name)
+    create_or_update_user_record(manager_name, password, snapshot_progress())
+    return True, "새 감독으로 등록되었습니다."
+
+def global_leaderboard_rows(include_current=True):
+    if include_current and st.session_state.get("current_user_id"):
+        save_current_user_progress()
+    db = load_user_db()
+    rows = []
+    for uid, rec in db.get("users", {}).items():
+        progress = rec.get("progress", {}) if isinstance(rec.get("progress", {}), dict) else {}
+        manager = rec.get("manager_name") or progress.get("manager_name") or uid
+        team_scores = progress.get("simulation_team_scores", {}) if isinstance(progress.get("simulation_team_scores", {}), dict) else {}
+        points = float(team_scores.get(manager, 0.0))
+        game_index = int(progress.get("simulation_game_index", 0) or 0)
+        rows.append({
+            "Rank": 1,
+            "Team": manager,
+            "Manager": "You" if uid == st.session_state.get("current_user_id") else "Subscriber",
+            "Points": round(points, 2),
+            "Transfers": "∞",
+            "Games": game_index,
+            "Updated": rec.get("updated_at", ""),
+        })
+    rows.sort(key=lambda x: (-x["Points"], -x["Games"], str(x["Team"])))
+    for i, row in enumerate(rows, start=1):
+        row["Rank"] = i
+    return rows
+
+def public_game_start_time(game_index: int):
+    return PUBLIC_FIRST_GAME_START + PUBLIC_GAME_INTERVAL * int(game_index)
+
+def public_game_result_time(game_index: int):
+    return public_game_start_time(game_index) + PUBLIC_RESULT_DELAY
+
+def now_kst():
+    return datetime.now(KST)
+
+def format_kst(dt: datetime):
+    return dt.astimezone(KST).strftime("%Y-%m-%d %H:%M KST")
+
+def compact_remaining(delta: timedelta):
+    seconds = max(0, int(delta.total_seconds()))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h >= 24:
+        d, h = divmod(h, 24)
+        return f"{d}일 {h}시간 {m}분"
+    if h:
+        return f"{h}시간 {m}분"
+    if m:
+        return f"{m}분 {s}초"
+    return f"{s}초"
+
+def public_game_status(game_index: int, at: datetime | None = None):
+    at = at or now_kst()
+    start = public_game_start_time(game_index)
+    result = public_game_result_time(game_index)
+    if at < start:
+        return {
+            "code": "before_start",
+            "label": "라인업 준비 가능",
+            "start": start,
+            "result": result,
+            "message": f"경기 시작까지 {compact_remaining(start - at)} 남았습니다.",
+            "can_edit": True,
+            "can_reveal": False,
+        }
+    if at < result:
+        return {
+            "code": "in_progress",
+            "label": "경기 진행 중 / 라인업 잠금",
+            "start": start,
+            "result": result,
+            "message": f"결과 공개까지 {compact_remaining(result - at)} 남았습니다.",
+            "can_edit": False,
+            "can_reveal": False,
+        }
+    return {
+        "code": "result_open",
+        "label": "결과 확인 가능",
+        "start": start,
+        "result": result,
+        "message": "결과가 공개되었습니다. 결과 확인을 누르면 점수와 가격이 반영됩니다.",
+        "can_edit": False,
+        "can_reveal": True,
+    }
 
 def user_fantasy_team_name():
     return st.session_state.get("manager_name", "나의 팀") or "나의 팀"
@@ -1421,8 +1653,11 @@ def render_dashboard_home(players_list, games_list):
     g = current_game()
     gw = g.get("gameweek", 1) if g else 1
     day = g.get("day", 1) if g else 1
-    date = g.get("date", "") if g else ""
-    time = g.get("time", "") if g else ""
+    status = public_game_status(st.session_state.get("simulation_game_index", 0)) if g else None
+    date = format_kst(status["start"]) if status else ""
+    time = f"결과 공개: {format_kst(status['result'])}" if status else ""
+    status_line = status["label"] if status else ""
+    status_message = status["message"] if status else ""
     venue = g.get("venue", "") if g else ""
     home = g.get("home_team", "") if g else ""
     away = g.get("away_team", "") if g else ""
@@ -1512,7 +1747,7 @@ def render_dashboard_home(players_list, games_list):
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
     with c6:
-        st.markdown(f"<div class='v21-tile'><div class='tile-icon'>📅</div><h3>Next Game</h3><div class='v21-next-logos'>{home_logo_html}<b>VS</b>{away_logo_html}</div><p>GW {gw} Day {day}<br>{date} {time}<br>{venue}</p></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='v21-tile'><div class='tile-icon'>📅</div><h3>Next Game</h3><div class='v21-next-logos'>{home_logo_html}<b>VS</b>{away_logo_html}</div><p>GW {gw} Day {day}<br>{date}<br>{time}<br>{venue}<br><b>{status_line}</b><br>{status_message}</p></div>", unsafe_allow_html=True)
         st.markdown("<div class='v21-action-card'>", unsafe_allow_html=True)
         if st.button("Play", key="dash_preview", use_container_width=True):
             st.session_state.page = "My Team"
@@ -2278,7 +2513,7 @@ def load_game_results():
     date_to_week = {}
     date_to_day = {}
     if first_date:
-        from datetime import datetime
+        from datetime import datetime, timezone, timedelta
         first = datetime.strptime(first_date, "%Y-%m-%d")
         grouped_dates = {}
         for d in dates:
@@ -2448,6 +2683,24 @@ def start_simulation(user_team):
     ]
 
 def update_league_table_from_scores():
+    # Public subscriber leaderboard: every registered manager becomes one ranked team.
+    rows = global_leaderboard_rows(include_current=True)
+    if rows:
+        st.session_state.simulation_league = [
+            {
+                "Rank": row["Rank"],
+                "Team": row["Team"],
+                "Manager": row["Manager"],
+                "Points": row["Points"],
+                "Transfers": "∞",
+                "Budget": format_price(BUDGET_CAP),
+                "Games": row.get("Games", 0),
+            }
+            for row in rows
+        ]
+        return
+
+    # Fallback before anyone has registered.
     league = []
     for team in get_fantasy_teams():
         league.append({
@@ -2969,23 +3222,50 @@ def render_name_input_screen():
     </style>
     <div class="name-screen">
       <div class="name-heading">
-        <div class="name-title">감독 이름 입력</div>
-        <div class="name-sub">AI 5팀과 경쟁할 내 감독명을 입력하세요.</div>
+        <div class="name-title">감독 로그인</div>
+        <div class="name-sub">감독명과 패스워드로 진행 상황을 저장하고 이어서 플레이하세요.</div>
       </div>
       <div class="name-bottom-spacer"></div>
     </div>
     """, unsafe_allow_html=True)
-    _, mid, _ = st.columns([1.4, 1.2, 1.4])
+    _, mid, _ = st.columns([1.25, 1.5, 1.25])
     with mid:
-        with st.form("manager_name_form", clear_on_submit=False):
-            name = st.text_input("이름을 입력하세요", value=st.session_state.manager_name, max_chars=16, placeholder="")
-            submitted = st.form_submit_button("게임 시작", use_container_width=True)
-            if submitted:
+        with st.form("manager_login_form", clear_on_submit=False):
+            name = st.text_input("감독명", value=st.session_state.manager_name, max_chars=16, placeholder="")
+            password = st.text_input("패스워드", type="password", placeholder="")
+            st.caption("처음 들어온 감독명은 새 계정으로 등록됩니다. 이미 등록한 감독명은 같은 패스워드로 이어서 플레이합니다.")
+            c_login, c_register = st.columns(2)
+            login_submitted = c_login.form_submit_button("로그인 / 이어하기", use_container_width=True)
+            register_submitted = c_register.form_submit_button("새 감독 등록", use_container_width=True)
+            if login_submitted or register_submitted:
                 if not name.strip():
-                    st.warning("이름을 먼저 입력해 주세요.")
+                    st.warning("감독명을 입력해 주세요.")
+                elif not password.strip():
+                    st.warning("패스워드를 입력해 주세요.")
+                elif register_submitted:
+                    ok, msg = register_new_user(players, games_2025_26, name.strip(), password)
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
                 else:
-                    begin_game_session(players, games_2025_26, name.strip())
-                    st.rerun()
+                    ok, msg = login_existing_user(name.strip(), password)
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        # Convenience: if the name does not exist yet, create it from the same form.
+                        db = load_user_db()
+                        if user_key_from_name(name.strip()) not in db.get("users", {}):
+                            ok2, msg2 = register_new_user(players, games_2025_26, name.strip(), password)
+                            if ok2:
+                                st.success("새 감독으로 등록하고 게임을 시작합니다.")
+                                st.rerun()
+                            else:
+                                st.error(msg2)
+                        else:
+                            st.error(msg)
 
 
 if st.session_state.app_phase == "splash":
@@ -3415,7 +3695,7 @@ elif page == "Simulation":
             st.markdown(table_html(preview_rows, ["Game", "Date", "Time", "GW", "Day", "Match", "Venue"]), unsafe_allow_html=True)
 
     if not st.session_state.simulation_started:
-        st.info("게임 시작 화면에서 이름을 입력하면 AI 5팀과의 시즌이 시작됩니다.")
+        st.info("감독명과 패스워드로 로그인하면 구독자 공개 리그에 참가합니다.")
         if st.button("시작 화면으로 돌아가기", use_container_width=True):
             st.session_state.app_phase = "splash"
             st.rerun()
@@ -3425,8 +3705,9 @@ elif page == "Simulation":
 
         if game_csv_loaded and not finished:
             g = games_2025_26[current_idx]
+            status = public_game_status(current_idx)
             st.markdown("### Next Game")
-            st.caption("예정 경기이므로 여기서는 최종 점수를 보여주지 않습니다. 완료된 경기 결과는 Results 탭에서 확인하세요.")
+            st.caption("공개 리그 모드에서는 모든 감독이 같은 실제 시간표를 따릅니다. 경기 시작 후 3시간이 지나야 결과를 확인할 수 있습니다.")
             home_logo = team_logo_img_html(g.get("home_team", ""), 62)
             away_logo = team_logo_img_html(g.get("away_team", ""), 62)
             st.markdown(f"""
@@ -3435,7 +3716,10 @@ elif page == "Simulation":
                 <div>
                   <div style="font-size:13px;color:rgba(255,255,255,.62);font-weight:900;">GAME {current_idx + 1} · GW {g.get('gameweek')} DAY {g.get('day')}</div>
                   <div style="font-size:24px;font-weight:900;margin-top:4px;">{game_match_label(g)}</div>
-                  <div style="color:rgba(255,255,255,.75);margin-top:4px;">{g.get('date')} {g.get('time')} · {g.get('venue','')}</div>
+                  <div style="color:rgba(255,255,255,.75);margin-top:4px;">공개 시작: {format_kst(status['start'])}</div>
+                  <div style="color:rgba(255,255,255,.75);margin-top:4px;">결과 공개: {format_kst(status['result'])}</div>
+                  <div style="margin-top:8px;font-weight:900;color:#facc15;">{status['label']} · {status['message']}</div>
+                  <div style="color:rgba(255,255,255,.75);margin-top:4px;">{g.get('venue','')}</div>
                 </div>
                 <div style="display:flex;align-items:center;gap:12px;">{home_logo}<b>VS</b>{away_logo}</div>
               </div>
@@ -3447,21 +3731,25 @@ elif page == "Simulation":
 
             col_a, col_b = st.columns([1, 1])
             with col_a:
-                if st.button("라인업 짜러 가기", use_container_width=True):
+                if st.button("라인업 짜러 가기", use_container_width=True, disabled=not status["can_edit"]):
                     st.session_state.page = "My Team"
                     st.session_state.main_flow_stage = "pack_lobby"
                     st.rerun()
+                if not status["can_edit"]:
+                    st.caption("경기 시작 후에는 라인업이 잠깁니다.")
             with col_b:
                 readiness = gameday_lineup_report(g, players)
-                if readiness["valid"]:
-                    if st.button("Simulate Next Game", use_container_width=True):
-                        process_one_game(games_2025_26[st.session_state.simulation_game_index], players)
-                        st.rerun()
-                else:
-                    st.button("Simulate Next Game", use_container_width=True, disabled=True)
-                    st.error("라인업 조건이 맞지 않아 시뮬레이션할 수 없습니다.")
+                can_reveal = readiness["valid"] and status["can_reveal"]
+                if st.button("결과 확인", use_container_width=True, disabled=not can_reveal):
+                    process_one_game(games_2025_26[st.session_state.simulation_game_index], players)
+                    save_current_user_progress()
+                    st.rerun()
+                if not readiness["valid"]:
+                    st.error("라인업 조건이 맞지 않아 결과를 확인할 수 없습니다.")
                     for msg in readiness["errors"]:
                         st.warning(msg)
+                elif not status["can_reveal"]:
+                    st.info(status["message"])
 
             with st.expander("Reset / restart simulation"):
                 st.caption("처음부터 다시 시작해야 할 때만 사용하세요.")
@@ -3489,15 +3777,16 @@ elif page == "Simulation":
         league = sorted(st.session_state.simulation_league, key=lambda x: (-x["Points"], str(x["Team"])))
         rows = []
         for i, row in enumerate(league, start=1):
-            manager_label = "You" if row["Team"] == user_team else "AI"
+            manager_label = "You" if row["Team"] == user_team else row.get("Manager", "Subscriber")
             rows.append({
                 "Rank": i,
                 "Team": row["Team"],
                 "Manager": manager_label,
                 "Points": f'{row["Points"]:.2f}',
+                "Games": row.get("Games", ""),
                 "Transfers": row["Transfers"],
             })
-        st.markdown(table_html(rows, ["Rank", "Team", "Manager", "Points", "Transfers"]), unsafe_allow_html=True)
+        st.markdown(table_html(rows, ["Rank", "Team", "Manager", "Points", "Games", "Transfers"]), unsafe_allow_html=True)
 
 elif page == "Results":
     st.markdown('<div class="section-title">GAME RESULTS</div>', unsafe_allow_html=True)
@@ -3506,7 +3795,7 @@ elif page == "Results":
     <div class="panel">
         <div class="panel-title">Completed Games Only</div>
         <div style="line-height:1.7;color:#475569;">
-            이미 시뮬레이션을 끝낸 경기 결과, 내 선택 카드, 그리고 AI 팀들의 당시 라인업을 확인합니다.
+            이미 결과 확인을 끝낸 경기 결과, 내 선택 카드, 그리고 당시 라인업을 확인합니다.
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -3569,6 +3858,7 @@ elif page == "Help":
     - Transfers: unlimited every Gameday
     - Deadline: 30 minutes before the first game of the Gameday, KST
     - Game results are read from `game_results_2025_26.csv`
+    - 공개 리그에서는 첫 경기 시작 시간을 기준으로 모든 감독이 같은 시간표를 따릅니다. 예시 설정: 2026-05-27 06:30 KST 첫 경기 시작, 경기 시작 3시간 후 결과 공개.
 
     ### Fantasy Score Formula
     Good Defense is excluded.
@@ -3609,6 +3899,10 @@ elif page == "Help":
     - 예를 들어 다음 경기가 BNK썸 vs 신한은행이면, My Team에서는 BNK썸과 신한은행 선수만 선택할 수 있습니다.
     - Simulation 탭에는 `Simulate Next Game`만 남겨두었습니다. 경기마다 Home → Build My Team에서 로스터와 Starting 5를 맞춘 뒤 한 경기씩 진행하는 방식입니다.
     """)
+
+# Save progress once per rerun for logged-in managers.
+if st.session_state.get("app_phase") == "main" and st.session_state.get("current_user_id"):
+    save_current_user_progress()
 
 # =========================
 # Footer
