@@ -20,7 +20,7 @@ import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v25.0 / strict login + admin schedule control"
+APP_VERSION = "Final Version v27.0 / in-app back-forward navigation"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -130,6 +130,18 @@ if "page" not in st.session_state:
 if "selected_player_key" not in st.session_state:
     st.session_state.selected_player_key = None
 
+if "nav_back_stack" not in st.session_state:
+    st.session_state.nav_back_stack = []
+
+if "nav_forward_stack" not in st.session_state:
+    st.session_state.nav_forward_stack = []
+
+if "nav_last_location" not in st.session_state:
+    st.session_state.nav_last_location = None
+
+if "nav_skip_tracking" not in st.session_state:
+    st.session_state.nav_skip_tracking = False
+
 if st.session_state.page == "Leagues":
     st.session_state.page = "Simulation"
 
@@ -147,6 +159,112 @@ if "simulation_league" not in st.session_state:
 
 def go_to(page_name: str):
     st.session_state.page = page_name
+
+
+def current_app_location():
+    return {
+        "page": st.session_state.get("page", "Home"),
+        "stage": st.session_state.get("main_flow_stage", ""),
+        "selected_player_key": st.session_state.get("selected_player_key", None),
+    }
+
+
+def location_signature(loc):
+    return json.dumps(loc or {}, ensure_ascii=False, sort_keys=True)
+
+
+def apply_app_location(loc):
+    if not loc:
+        return
+    st.session_state.page = loc.get("page", "Home")
+    if "stage" in loc and loc.get("stage") is not None:
+        st.session_state.main_flow_stage = loc.get("stage")
+    if "selected_player_key" in loc:
+        st.session_state.selected_player_key = loc.get("selected_player_key")
+
+
+def sanitize_location_for_lock(loc):
+    """Keep history navigation from reviving an editable lineup state after lock."""
+    if not loc:
+        return loc
+    loc = dict(loc)
+    try:
+        if loc.get("page") == "My Team" and not is_lineup_editable_now():
+            loc["stage"] = "locked_readonly"
+    except NameError:
+        pass
+    return loc
+
+
+def trim_history(stack, limit=30):
+    if len(stack) > limit:
+        del stack[:-limit]
+
+
+def track_navigation_change():
+    if st.session_state.get("app_phase") != "main":
+        return
+    current = current_app_location()
+    last = st.session_state.get("nav_last_location")
+    if last is None:
+        st.session_state.nav_last_location = current
+        return
+    if st.session_state.get("nav_skip_tracking"):
+        st.session_state.nav_skip_tracking = False
+        st.session_state.nav_last_location = current
+        return
+    if location_signature(current) != location_signature(last):
+        st.session_state.nav_back_stack.append(last)
+        trim_history(st.session_state.nav_back_stack)
+        st.session_state.nav_forward_stack = []
+        st.session_state.nav_last_location = current
+
+
+def render_history_controls():
+    back_disabled = len(st.session_state.get("nav_back_stack", [])) == 0
+    forward_disabled = len(st.session_state.get("nav_forward_stack", [])) == 0
+    st.markdown(
+        """
+        <style>
+        .history-toolbar {
+            display:flex;
+            align-items:center;
+            justify-content:flex-end;
+            gap:8px;
+            margin:2px 0 6px 0;
+        }
+        .history-hint {
+            font-size:12px;
+            color:#64748b;
+            text-align:right;
+            margin-top:-4px;
+            margin-bottom:6px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    spacer, back_col, fwd_col = st.columns([7, 1.25, 1.25])
+    with back_col:
+        if st.button("← 뒤로가기", key="history_back_button", use_container_width=True, disabled=back_disabled):
+            current = current_app_location()
+            prev = st.session_state.nav_back_stack.pop()
+            st.session_state.nav_forward_stack.append(current)
+            trim_history(st.session_state.nav_forward_stack)
+            st.session_state.nav_skip_tracking = True
+            apply_app_location(sanitize_location_for_lock(prev))
+            st.rerun()
+    with fwd_col:
+        if st.button("앞으로가기 →", key="history_forward_button", use_container_width=True, disabled=forward_disabled):
+            current = current_app_location()
+            nxt = st.session_state.nav_forward_stack.pop()
+            st.session_state.nav_back_stack.append(current)
+            trim_history(st.session_state.nav_back_stack)
+            st.session_state.nav_skip_tracking = True
+            apply_app_location(sanitize_location_for_lock(nxt))
+            st.rerun()
+    st.markdown('<div class="history-hint">앱 내부 화면 이동 기록 기준으로 작동합니다.</div>', unsafe_allow_html=True)
+
 
 def player_key(player):
     return f'{player.get("name", "")}__{player.get("team_2025_26", "")}'
@@ -3470,6 +3588,8 @@ elif st.session_state.app_phase == "name_input":
 
 render_bgm_player()
 handle_query_actions()
+track_navigation_change()
+render_history_controls()
 nav()
 page = st.session_state.page
 
