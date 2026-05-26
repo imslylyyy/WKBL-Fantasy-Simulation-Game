@@ -9,10 +9,13 @@ import re
 import random
 import string
 from pathlib import Path
+from datetime import datetime
+import calendar
+import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v21.0 / dashboard home + pack flow"
+APP_VERSION = "Final Version v23.0 / dashboard polish + schedule + price chart + lineup history"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -90,6 +93,9 @@ if "fantasy_team_names" not in st.session_state:
 
 if "bgm_enabled" not in st.session_state:
     st.session_state.bgm_enabled = False
+
+if "bgm_volume" not in st.session_state:
+    st.session_state.bgm_volume = 42
 
 if "page" not in st.session_state:
     st.session_state.page = "Home"
@@ -173,6 +179,7 @@ def render_bgm_player():
     src = audio_data_url(BGM_AUDIO_PATH)
     if not src:
         return
+    volume = max(0, min(100, int(st.session_state.get("bgm_volume", 42)))) / 100
     components.html(f"""
     <audio id="wkbl-bgm" autoplay loop playsinline>
         <source src="{src}" type="audio/mpeg">
@@ -180,13 +187,23 @@ def render_bgm_player():
     <script>
     const audio = document.getElementById('wkbl-bgm');
     if (audio) {{
-        audio.volume = 0.42;
+        audio.volume = {volume:.2f};
         audio.loop = true;
         const p = audio.play();
         if (p !== undefined) {{ p.catch(() => {{}}); }}
     }}
     </script>
     """, height=0)
+
+def render_music_controls():
+    st.markdown("<div style='text-align:right;font-weight:900;color:#64748b;'>🎵 음악 설정</div>", unsafe_allow_html=True)
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        enabled = st.toggle("음악", value=bool(st.session_state.get("bgm_enabled", False)), key="bgm_toggle_home")
+        st.session_state.bgm_enabled = enabled
+    with c2:
+        volume = st.slider("음량", 0, 100, int(st.session_state.get("bgm_volume", 42)), key="bgm_volume_slider")
+        st.session_state.bgm_volume = volume
 
 def begin_game_session(players_list, games_list, manager_name):
     """Create the user's fantasy league and enter the main game."""
@@ -1045,7 +1062,7 @@ button[kind="secondary"] {
 
 /* v21 dashboard home */
 .nav-wrap { background: rgba(2,6,23,.82); border:1px solid rgba(255,255,255,.12); box-shadow:0 12px 30px rgba(2,6,23,.18); }
-.v21-home { position:relative; overflow:hidden; border-radius:30px; min-height:520px; padding:34px 36px 22px; color:white; border:1px solid rgba(255,255,255,.16); box-shadow:0 26px 70px rgba(2,6,23,.28); background-size:cover; background-position:center; }
+.v21-home { position:relative; overflow:hidden; border-radius:30px; min-height:500px; padding:34px 36px 22px; color:white; border:1px solid rgba(255,255,255,.16); box-shadow:0 26px 70px rgba(2,6,23,.28); background-size:cover; background-position:center 36%; }
 .v21-home:before { content:""; position:absolute; inset:0; background:linear-gradient(90deg, rgba(2,6,23,.94) 0%, rgba(2,6,23,.78) 36%, rgba(2,6,23,.38) 67%, rgba(2,6,23,.72) 100%); }
 .v21-home:after { content:""; position:absolute; left:-160px; bottom:-160px; width:460px; height:460px; border:2px solid rgba(233,30,115,.55); border-radius:50%; box-shadow:0 0 70px rgba(233,30,115,.35); }
 .v21-home > * { position:relative; z-index:2; }
@@ -1382,7 +1399,7 @@ def header():
     """, unsafe_allow_html=True)
 
 def nav():
-    items = ["Home", "My Team", "Players", "Simulation", "Help"]
+    items = ["Home", "My Team", "Players", "Schedule", "Prices", "Results", "Simulation", "Help"]
     st.markdown('<div class="nav-wrap">', unsafe_allow_html=True)
     cols = st.columns(len(items))
 
@@ -1399,12 +1416,11 @@ def nav():
 
 
 def render_dashboard_home(players_list, games_list):
-    """Game-like home dashboard. This replaces the old quest-map home screen."""
+    """Game-like home dashboard with actual navigation buttons."""
     update_league_table_from_scores()
     g = current_game()
     gw = g.get("gameweek", 1) if g else 1
     day = g.get("day", 1) if g else 1
-    match = game_match_label(g) if g else "No game loaded"
     date = g.get("date", "") if g else ""
     time = g.get("time", "") if g else ""
     venue = g.get("venue", "") if g else ""
@@ -1419,11 +1435,6 @@ def render_dashboard_home(players_list, games_list):
     user_team = st.session_state.get("simulation_user_team") or manager
     my_points = float(st.session_state.get("simulation_team_scores", {}).get(user_team, 0.0))
     league = sorted(st.session_state.get("simulation_league", []), key=lambda x: (-x.get("Points", 0), str(x.get("Team", ""))))
-    rank = "-"
-    for i, row in enumerate(league, start=1):
-        if row.get("Team") == user_team:
-            rank = str(i)
-            break
     standing_lines = ""
     for i, row in enumerate(league[:3], start=1):
         standing_lines += f"<div style='display:flex;justify-content:space-between;font-size:12px;margin:3px 0;'><span>{i} · {row.get('Team','')}</span><b>{row.get('Points',0):.1f}</b></div>"
@@ -1433,23 +1444,33 @@ def render_dashboard_home(players_list, games_list):
     away_logo_html = f'<img src="{away_logo}" alt="{away}">' if away_logo else ''
     wkbl_logo_html = f'<img src="{wkbl}" alt="WKBL">' if wkbl else '<div style="font-size:34px;font-weight:900;">WKBL</div>'
 
+    music_left, music_right = st.columns([4.4, 1.2])
+    with music_right:
+        render_music_controls()
+
     st.markdown(f"""
     <div class="v21-home" style="{bg_style}">
       <div class="v21-topbar">
         <div class="v21-brand">{wkbl_logo_html}</div>
         <div style="display:flex;gap:12px;align-items:center;">
-          <div class="v21-manager">⭐ {my_points:.0f}</div>
-          <div class="v21-manager">👤 {manager}<br><span style='font-size:11px;color:rgba(255,255,255,.65);'>Rookie Manager · Rank {rank}</span></div>
+          <div class="v21-manager">⭐ 실시간 포인트&nbsp; {my_points:.2f}</div>
+          <div class="v21-manager">👤 {manager} 감독님, 환영합니다</div>
         </div>
       </div>
       <div class="v21-title"><span>WKBL</span><span class="pink">Fantasy</span></div>
       <div class="v21-sub">Build. Compete. Win.<br>카드를 뽑고, 라인업을 만들고, 매 경기 판타지 포인트로 순위를 올리세요.</div>
-      <div class="v21-cta-row">
-        <div class="v21-cta">Build My Team →</div>
-        <div class="v21-cta v21-ghost">How to Play ▶</div>
-      </div>
     </div>
     """, unsafe_allow_html=True)
+
+    nav_a, nav_b, nav_c = st.columns([1, 1, 4])
+    with nav_a:
+        if st.button("경기 일정", key="dash_schedule", use_container_width=True):
+            st.session_state.page = "Schedule"
+            st.rerun()
+    with nav_b:
+        if st.button("가격 확인", key="dash_prices", use_container_width=True):
+            st.session_state.page = "Prices"
+            st.rerun()
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
@@ -1469,17 +1490,10 @@ def render_dashboard_home(players_list, games_list):
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
     with c3:
-        used_gws = set(st.session_state.get("chip_allstar_used_gameweeks", []))
-        active = bool(st.session_state.get("chip_allstar_active", False))
-        used = gw in used_gws
-        status = "활성화됨" if active else ("이번 GW 사용 완료" if used else "주차당 1회 사용 가능")
-        st.markdown(f"<div class='v21-tile'><div class='tile-icon'>⭐</div><h3>All-Star Challenge</h3><p>{status}<br>다음 경기 Starting 5 +20%.</p></div>", unsafe_allow_html=True)
+        st.markdown("<div class='v21-tile'><div class='tile-icon'>📊</div><h3>Results</h3><p>지금까지 시뮬레이션한 경기 결과와 당시 라인업을 확인합니다.</p></div>", unsafe_allow_html=True)
         st.markdown("<div class='v21-action-card'>", unsafe_allow_html=True)
-        if st.button("All-Star 사용", key="dash_allstar", use_container_width=True, disabled=active or used):
-            st.session_state.chip_allstar_active = True
-            st.session_state.chip_allstar_available = False
-            st.session_state.chip_allstar_active_gameweek = gw
-            st.success(f"GW {gw} All-Star가 활성화되었습니다. 다음 시뮬레이션 경기에서 적용됩니다.")
+        if st.button("View Results", key="dash_results", use_container_width=True):
+            st.session_state.page = "Results"
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
     with c4:
@@ -1500,7 +1514,7 @@ def render_dashboard_home(players_list, games_list):
     with c6:
         st.markdown(f"<div class='v21-tile'><div class='tile-icon'>📅</div><h3>Next Game</h3><div class='v21-next-logos'>{home_logo_html}<b>VS</b>{away_logo_html}</div><p>GW {gw} Day {day}<br>{date} {time}<br>{venue}</p></div>", unsafe_allow_html=True)
         st.markdown("<div class='v21-action-card'>", unsafe_allow_html=True)
-        if st.button("Game Preview", key="dash_preview", use_container_width=True):
+        if st.button("Play", key="dash_preview", use_container_width=True):
             st.session_state.page = "My Team"
             st.session_state.main_flow_stage = "pack_lobby"
             st.rerun()
@@ -1515,6 +1529,8 @@ def sidebar_menu():
         "Simulation": "🎮 시뮬레이션",
         "Players": "👥 선수 데이터",
         "Results": "📊 경기 결과",
+        "Schedule": "📅 경기 일정",
+        "Prices": "📈 가격 확인",
         "Help": "❓ 도움말",
         "Home": "🏠 홈",
     }
@@ -1523,7 +1539,7 @@ def sidebar_menu():
         st.caption(f"감독: {st.session_state.get('manager_name','-')}")
         st.caption(f"버전: {APP_VERSION}")
         st.divider()
-        for page_name in ["My Team", "Simulation", "Players", "Results", "Help", "Home"]:
+        for page_name in ["Home", "My Team", "Players", "Schedule", "Prices", "Results", "Simulation", "Help"]:
             if st.button(labels[page_name], key=f"side_{page_name}", use_container_width=True):
                 st.session_state.page = page_name
                 st.rerun()
@@ -1627,6 +1643,7 @@ def initialize_fantasy_state(players_list):
         "simulation_team_starting": {},
         "simulation_team_captains": {},
         "simulation_ai_ready": False,
+        "price_history": {},
         "auto_roster_seed": 0,
         "pack_game_id": "",
         "pack_back_keys": [],
@@ -1638,6 +1655,8 @@ def initialize_fantasy_state(players_list):
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    if not st.session_state.get("price_history"):
+        record_price_snapshot(players_list, "Start")
 
 def apply_market_state(players_list):
     for p in players_list:
@@ -1665,6 +1684,44 @@ def price_of_key(key, players_list):
     if not p:
         return MIN_PRICE
     return float(p.get("current_price", p.get("initial_price", MIN_PRICE)))
+
+def total_price_for_keys(keys, players_list):
+    return sum(price_of_key(k, players_list) for k in keys)
+
+def pack_total_budget(players_list):
+    return total_price_for_keys(pack_roster_keys(), players_list) if "pack_back_keys" in st.session_state else 0.0
+
+def record_price_snapshot(players_list, label):
+    """Store a compact price-history point for every player after each simulated game."""
+    hist = dict(st.session_state.get("price_history", {}))
+    for pl in players_list:
+        k = player_key(pl)
+        price = float(pl.get("current_price", pl.get("initial_price", MIN_PRICE)))
+        hist.setdefault(k, [])
+        if not hist[k] or hist[k][-1].get("Label") != label:
+            hist[k].append({"Label": label, "Price": round(price, 2)})
+    st.session_state.price_history = hist
+
+def lineup_snapshot_for_history(players_list):
+    lookup = player_lookup(players_list)
+    snapshots = {}
+    for team in get_fantasy_teams():
+        roster = list(st.session_state.simulation_team_rosters.get(team, []))
+        starting = list(st.session_state.simulation_team_starting.get(team, []))
+        captain = st.session_state.simulation_team_captains.get(team)
+        bench = [k for k in roster if k not in starting]
+        def label(k):
+            p = lookup.get(k)
+            if not p:
+                return k
+            mark = " 👑" if k == captain else ""
+            return f"{p.get('name','')}({p.get('team_2025_26','')}, {p.get('position_label','')}){mark}"
+        snapshots[team] = {
+            "captain": label(captain) if captain else "-",
+            "starting": [label(k) for k in starting],
+            "bench": [label(k) for k in bench],
+        }
+    return snapshots
 
 def position_of_key(key, players_list):
     p = player_lookup(players_list).get(key)
@@ -2331,6 +2388,8 @@ def reset_simulation_runtime(players_list):
     st.session_state.simulation_team_rosters = {}
     st.session_state.simulation_team_starting = {}
     st.session_state.simulation_team_captains = {}
+    st.session_state.price_history = {}
+    record_price_snapshot(players_list, "Start")
     st.session_state.user_transfers = 0
     st.session_state.user_transfer_penalty_points = 0.0
     st.session_state.user_transfer_log = []
@@ -2461,6 +2520,8 @@ def process_one_game(game, players_list):
             "New Price": format_price(new_price),
         })
 
+    lineups_snapshot = lineup_snapshot_for_history(players_list)
+
     game_team_points = {}
     for fantasy_team in get_fantasy_teams():
         roster = st.session_state.simulation_team_rosters.get(fantasy_team, [])
@@ -2486,6 +2547,7 @@ def process_one_game(game, players_list):
         game_team_points[fantasy_team] = round(total, 2)
 
     st.session_state.chip_captain_active = False  # legacy state; captain bonus is automatic now
+    allstar_was_active_for_history = bool(st.session_state.chip_allstar_active)
     if st.session_state.chip_allstar_active:
         used_gw = to_int(game.get("gameweek", st.session_state.current_transfer_gameweek), st.session_state.current_transfer_gameweek)
         used_label = f"{game.get('date', '')} {game_match_label(game, show_score=False)}".strip()
@@ -2510,8 +2572,12 @@ def process_one_game(game, players_list):
         "day": game.get("day", ""),
         "match": game_match_label(game, show_score=True),
         "team_points": game_team_points,
+        "lineups": lineups_snapshot,
+        "allstar_applied": allstar_was_active_for_history,
         "price_changes": sorted(price_changes, key=lambda x: abs(float(x["Change"].replace("억원",""))), reverse=True)[:10],
     })
+    apply_market_state(players_list)
+    record_price_snapshot(players_list, f"G{st.session_state.simulation_game_index + 1}")
 
     st.session_state.simulation_game_index += 1
     st.session_state.simulation_game_no = st.session_state.simulation_game_index + 1
@@ -2632,8 +2698,9 @@ def render_position_pack(pos_label, target_count):
         return
 
     st.markdown(f"### {title}")
-    st.caption(f"선택할 5장의 카드를 골라주세요. 현재 선택: {len(selected)}/{target_count}")
-    st.info("카드 아래 버튼으로 선택/해제할 수 있습니다. 현재 화면은 한 포지션 팩만 크게 보여 주므로 카드 정보가 잘리지 않습니다.")
+    current_budget = pack_total_budget(players)
+    st.caption(f"선택할 5장의 카드를 골라주세요. 현재 선택: {len(selected)}/{target_count} · 현재 예산: {format_price(current_budget)}/{format_price(BUDGET_CAP)}")
+    st.info("카드 아래 버튼으로 선택/해제할 수 있습니다. 다른 팩에서 이미 고른 카드 가격도 현재 예산에 함께 합산됩니다.")
     pool = sorted(
         pack_pool(players, pos_label),
         key=lambda p: (-float(p.get("current_price", p.get("initial_price", MIN_PRICE))), p.get("name", ""))
@@ -2651,7 +2718,8 @@ def render_position_pack(pos_label, target_count):
                     st.session_state[key_name] = selected
                     st.rerun()
             else:
-                disabled = len(selected) >= target_count
+                candidate_budget = pack_total_budget(players) + price_of_key(k, players)
+                disabled = len(selected) >= target_count or candidate_budget > BUDGET_CAP
                 if st.button("+ 카드 선택", key=f"pack_add_{key_name}_{k}", use_container_width=True, disabled=disabled):
                     selected.append(k)
                     st.session_state[key_name] = selected
@@ -2824,7 +2892,7 @@ def handle_query_actions():
 # =========================
 def render_splash_screen():
     splash = asset_data_url(SPLASH_BG_PATH) or asset_data_url(HERO_IMAGE_PATH)
-    bg = f"background-image: linear-gradient(90deg, rgba(2,6,23,.70), rgba(2,6,23,.28), rgba(2,6,23,.72)), url('{splash}');" if splash else "background: radial-gradient(circle at 50% 40%, #1d4ed8 0%, #020617 70%);"
+    bg = f"background-image: linear-gradient(90deg, rgba(2,6,23,.76), rgba(2,6,23,.20), rgba(2,6,23,.56)), url('{splash}');" if splash else "background: radial-gradient(circle at 50% 40%, #1d4ed8 0%, #020617 70%);"
     st.markdown(f"""
     <style>
     .splash-screen {{
@@ -2832,7 +2900,7 @@ def render_splash_screen():
         border-radius: 0;
         margin: -1rem -2.5rem 0 -2.5rem;
         background-size: cover;
-        background-position: center;
+        background-position: center 38%;
         position: relative;
         overflow: hidden;
         {bg}
@@ -2842,9 +2910,9 @@ def render_splash_screen():
         font-weight:800; letter-spacing:.5px; font-size:16px; text-shadow:0 3px 10px rgba(0,0,0,.35);
     }}
     .splash-title {{
-        position:absolute; left:50%; top:18%; transform:translateX(-50%);
-        font-family:'Oswald', sans-serif; color:white; font-size:76px; font-weight:900;
-        text-shadow:0 6px 30px rgba(0,0,0,.60); letter-spacing:-1px; text-align:center;
+        position:absolute; left:58px; top:92px; transform:none;
+        font-family:'Oswald', sans-serif; color:white; font-size:72px; font-weight:900;
+        text-shadow:0 6px 30px rgba(0,0,0,.60); letter-spacing:-1px; text-align:left; line-height:.92;
     }}
     .splash-title span {{ color:#E91E73; }}
     .start-guide {{
@@ -2870,8 +2938,8 @@ def render_splash_screen():
     </style>
     <div class="splash-screen">
         <div class="splash-version">{APP_VERSION}</div>
-        <div class="splash-title">WKBL <span>FANTASY</span></div>
-        <div class="start-guide">START를 누르면 배경음악이 반복 재생됩니다.</div>
+        <div class="splash-title">WKBL<br><span>FANTASY</span></div>
+        <div class="start-guide">START를 누르면 배경음악이 재생됩니다.</div>
     </div>
     """, unsafe_allow_html=True)
     _, mid, _ = st.columns([3, 1.2, 3])
@@ -2885,36 +2953,40 @@ def render_splash_screen():
 def render_name_input_screen():
     render_bgm_player()
     splash = asset_data_url(SPLASH_BG_PATH) or asset_data_url(HERO_IMAGE_PATH)
-    bg = f"background-image: linear-gradient(120deg, rgba(2,6,23,.80), rgba(6,78,164,.62), rgba(233,30,115,.55)), url('{splash}');" if splash else "background: linear-gradient(135deg,#020617,#064EA4,#E91E73);"
+    bg = f"background-image: linear-gradient(180deg, rgba(2,6,23,.72), rgba(2,6,23,.18) 42%, rgba(2,6,23,.78)), url('{splash}');" if splash else "background: linear-gradient(135deg,#020617,#064EA4,#E91E73);"
     st.markdown(f"""
     <style>
     .name-screen {{
-        min-height: 88vh; margin: -1rem -2.5rem 0 -2.5rem; padding: 120px 24px 24px;
-        background-size: cover; background-position:center; {bg}
+        min-height: 78vh; margin: -1rem -2.5rem 0 -2.5rem; padding: 56px 24px 24px;
+        background-size: cover; background-position:center 36%; {bg}; position:relative; overflow:hidden;
     }}
-    .name-panel {{
-        max-width: 560px; margin: 0 auto; background: rgba(255,255,255,.94); border: 1px solid rgba(255,255,255,.36);
-        border-radius: 28px; padding: 34px; box-shadow: 0 24px 80px rgba(0,0,0,.35);
-        text-align:center;
+    .name-heading {{
+        text-align:center; color:white; text-shadow:0 6px 24px rgba(0,0,0,.55); margin-top:4px;
     }}
-    .name-title {{font-family:'Oswald',sans-serif;font-size:46px;font-weight:900;color:#0f172a;}}
-    .name-sub {{color:#64748b;font-weight:800;margin:8px 0 20px;}}
+    .name-title {{font-family:'Oswald',sans-serif;font-size:56px;font-weight:900;color:white;letter-spacing:-1px;}}
+    .name-sub {{color:rgba(255,255,255,.86);font-weight:900;margin-top:8px;font-size:17px;}}
+    .name-bottom-spacer {{height:44vh;}}
     </style>
     <div class="name-screen">
-      <div class="name-panel">
+      <div class="name-heading">
         <div class="name-title">감독 이름 입력</div>
         <div class="name-sub">AI 5팀과 경쟁할 내 감독명을 입력하세요.</div>
       </div>
+      <div class="name-bottom-spacer"></div>
     </div>
     """, unsafe_allow_html=True)
-    with st.container():
-        name = st.text_input("이름을 입력하세요", value=st.session_state.manager_name, max_chars=16, placeholder="예: 채영")
-        if st.button("게임 시작", use_container_width=True):
-            if not name.strip():
-                st.warning("이름을 먼저 입력해 주세요.")
-            else:
-                begin_game_session(players, games_2025_26, name.strip())
-                st.rerun()
+    _, mid, _ = st.columns([1.4, 1.2, 1.4])
+    with mid:
+        with st.form("manager_name_form", clear_on_submit=False):
+            name = st.text_input("이름을 입력하세요", value=st.session_state.manager_name, max_chars=16, placeholder="")
+            submitted = st.form_submit_button("게임 시작", use_container_width=True)
+            if submitted:
+                if not name.strip():
+                    st.warning("이름을 먼저 입력해 주세요.")
+                else:
+                    begin_game_session(players, games_2025_26, name.strip())
+                    st.rerun()
+
 
 if st.session_state.app_phase == "splash":
     render_splash_screen()
@@ -2968,32 +3040,36 @@ elif page == "My Team":
 
         elif stage == "pack_lobby":
             st.markdown('<div class="section-title">PLAYER PACK LOBBY</div>', unsafe_allow_html=True)
-            st.info("FRONT COURT PACK을 먼저 열고 5장을 선택한 다음, BACK COURT PACK 5장을 골라 총 10장의 경기용 카드를 완성하세요.")
+            st.info("FRONT/BACK 중 아무 팩이나 먼저 열 수 있습니다. 두 팩에서 각각 5장씩 골라 총 10장의 경기용 카드를 완성하세요.")
+            front_keys = list(st.session_state.get("pack_front_keys", []))
+            back_keys = list(st.session_state.get("pack_back_keys", []))
+            front_budget = total_price_for_keys(front_keys, players)
+            back_budget = total_price_for_keys(back_keys, players)
+            total_budget = front_budget + back_budget
             p1, p2 = st.columns(2)
             with p1:
-                render_pack_open_card("FRONT COURT PLAYERS PACK", "먼저 오픈해야 합니다", pink=True)
+                render_pack_open_card("FRONT COURT PLAYERS PACK", f"선택 {len(front_keys)}/5 · 예산 {format_price(total_budget)}/{format_price(BUDGET_CAP)}", pink=True)
                 if st.button("OPEN FRONT PACK", use_container_width=True):
                     st.session_state.pack_front_opened = True
                     st.session_state.main_flow_stage = "front_pack"
                     st.rerun()
-                if len(st.session_state.get("pack_front_keys", [])) == 5:
-                    st.success("선택 완료 5/5")
+                if len(front_keys) == 5:
+                    st.success(f"선택 완료 5/5 · 예산 {format_price(total_budget)}/{format_price(BUDGET_CAP)}")
             with p2:
-                render_pack_open_card("BACK COURT PLAYERS PACK", "FRONT 완료 후 오픈", pink=False)
-                disabled = len(st.session_state.get("pack_front_keys", [])) < 5
-                if st.button("OPEN BACK PACK", use_container_width=True, disabled=disabled):
+                render_pack_open_card("BACK COURT PLAYERS PACK", f"선택 {len(back_keys)}/5 · 예산 {format_price(total_budget)}/{format_price(BUDGET_CAP)}", pink=False)
+                if st.button("OPEN BACK PACK", use_container_width=True):
                     st.session_state.pack_back_opened = True
                     st.session_state.main_flow_stage = "back_pack"
                     st.rerun()
-                if len(st.session_state.get("pack_back_keys", [])) == 5:
-                    st.success("선택 완료 5/5")
+                if len(back_keys) == 5:
+                    st.success(f"선택 완료 5/5 · 예산 {format_price(total_budget)}/{format_price(BUDGET_CAP)}")
             b1, b2 = st.columns([1,1])
             with b1:
                 if st.button("← 홈으로", use_container_width=True):
                     st.session_state.page = "Home"
                     st.rerun()
             with b2:
-                can_go = len(st.session_state.get("pack_front_keys", [])) == 5 and len(st.session_state.get("pack_back_keys", [])) == 5
+                can_go = len(front_keys) == 5 and len(back_keys) == 5
                 if st.button("라인업 구성으로 이동", use_container_width=True, disabled=not can_go):
                     ok, report = save_pack_roster_if_valid(players)
                     if ok:
@@ -3002,6 +3078,7 @@ elif page == "My Team":
                     else:
                         for err in report["errors"]:
                             st.error(err)
+
 
         elif stage == "front_pack":
             st.markdown('<div class="section-title">FRONT COURT PACK OPEN</div>', unsafe_allow_html=True)
@@ -3106,6 +3183,33 @@ elif page == "My Team":
                         format_func=lambda k: label_for_key(k, players),
                     )
 
+                # All-Star is decided only after the line-up is effectively confirmed.
+                current_gw = next_game_obj.get("gameweek", st.session_state.current_transfer_gameweek) if next_game_obj else st.session_state.current_transfer_gameweek
+                used_gws = set(st.session_state.get("chip_allstar_used_gameweeks", []))
+                active_allstar = bool(st.session_state.get("chip_allstar_active", False))
+                used_allstar = current_gw in used_gws
+                a1, a2 = st.columns([2.2, 1])
+                with a1:
+                    if active_allstar:
+                        st.success("All-Star 활성화됨: 다음 시뮬레이션 경기에서 Starting 5 점수 +20%")
+                    elif used_allstar:
+                        st.info(f"GW {current_gw} All-Star는 이미 사용했습니다.")
+                    else:
+                        st.info("All-Star는 GW마다 1회 사용 가능합니다. 라인업 확정 후 필요하면 여기서 사용하세요.")
+                with a2:
+                    if active_allstar:
+                        if st.button("All-Star 취소", key="lineup_allstar_cancel", use_container_width=True):
+                            st.session_state.chip_allstar_active = False
+                            st.session_state.chip_allstar_available = True
+                            st.session_state.chip_allstar_active_gameweek = None
+                            st.rerun()
+                    else:
+                        if st.button("All-Star 사용", key="lineup_allstar_activate", use_container_width=True, disabled=used_allstar or not start_report["valid"]):
+                            st.session_state.chip_allstar_active = True
+                            st.session_state.chip_allstar_available = False
+                            st.session_state.chip_allstar_active_gameweek = current_gw
+                            st.rerun()
+
                 st.markdown('<div class="court"><b style="color:#064EA4;">STARTING 5</b><div class="reveal-note">선발은 100% 반영, 캡틴은 자동 2배, 벤치는 50% 반영됩니다.</div>', unsafe_allow_html=True)
                 cols = st.columns(5)
                 allstar_glow = bool(st.session_state.get("chip_allstar_active", False))
@@ -3140,6 +3244,62 @@ elif page == "My Team":
                         st.session_state.page = "Simulation"
                         st.rerun()
 
+
+elif page == "Schedule":
+    st.markdown('<div class="section-title">경기 일정</div>', unsafe_allow_html=True)
+    if not games_2025_26:
+        st.warning("연결된 경기 일정이 없습니다.")
+    else:
+        games_by_date = {}
+        for g in games_2025_26:
+            d = g.get("date", "")
+            if d:
+                games_by_date.setdefault(d, []).append(g)
+        months = sorted({d[:7] for d in games_by_date})
+        selected_month = st.selectbox("월 선택", months, index=0, key="schedule_month_select")
+        year, month = map(int, selected_month.split("-"))
+        cal = calendar.Calendar(firstweekday=6)
+        rows = []
+        for week in cal.monthdatescalendar(year, month):
+            row = []
+            for day_obj in week:
+                dstr = day_obj.strftime("%Y-%m-%d")
+                if day_obj.month != month:
+                    row.append("<div style='min-height:110px;color:#cbd5e1;'> </div>")
+                    continue
+                entries = []
+                for g in games_by_date.get(dstr, []):
+                    entries.append(f"<div style='margin-top:6px;padding:6px;border-radius:10px;background:#eff6ff;font-size:12px;font-weight:800;color:#064EA4;'>GW {g.get('gameweek')} Day {g.get('day')}<br>{game_match_label(g)}<br><span style='color:#64748b'>{g.get('time','')} · {g.get('venue','')}</span></div>")
+                cell = f"<div style='min-height:120px;'><b>{day_obj.day}</b>{''.join(entries)}</div>"
+                row.append(cell)
+            rows.append(row)
+        html = "<table style='width:100%;border-collapse:separate;border-spacing:8px;'>"
+        html += "<tr>" + "".join([f"<th style='text-align:left;color:#64748b;padding:8px;'>{d}</th>" for d in ["일","월","화","수","목","금","토"]]) + "</tr>"
+        for row in rows:
+            html += "<tr>" + "".join([f"<td style='vertical-align:top;border:1px solid #e5e7eb;border-radius:16px;padding:10px;background:white;'>{cell}</td>" for cell in row]) + "</tr>"
+        html += "</table>"
+        st.markdown(html, unsafe_allow_html=True)
+
+elif page == "Prices":
+    st.markdown('<div class="section-title">가격 확인</div>', unsafe_allow_html=True)
+    st.caption("시즌이 진행되면서 선수 가격이 어떻게 변했는지 주식 그래프처럼 확인합니다.")
+    teams = ["All"] + sorted(set([p["team_2025_26"] for p in players if p["team_2025_26"]]))
+    tcol, pcol = st.columns([1, 2])
+    with tcol:
+        team_filter = st.selectbox("팀", teams, key="price_team_filter")
+    candidates = [p for p in players if team_filter == "All" or p.get("team_2025_26") == team_filter]
+    candidates = sorted(candidates, key=lambda x: (-float(x.get("current_price", x.get("initial_price", MIN_PRICE))), x.get("name", "")))
+    with pcol:
+        chosen_key = st.selectbox("선수", [player_key(p) for p in candidates], format_func=lambda k: label_for_key(k, players), key="price_player_select")
+    hist = st.session_state.get("price_history", {}).get(chosen_key, [])
+    if not hist:
+        p0 = player_lookup(players).get(chosen_key)
+        hist = [{"Label": "현재", "Price": float(p0.get("current_price", p0.get("initial_price", MIN_PRICE))) if p0 else MIN_PRICE}]
+    df = pd.DataFrame(hist)
+    if not df.empty and "Label" in df and "Price" in df:
+        st.line_chart(df.set_index("Label")[["Price"]], height=360)
+    latest = hist[-1]
+    st.info(f"현재 가격: {latest.get('Price', 0):.2f}억원 / 가격 변동 제한: 경기당 ±{MAX_PRICE_CHANGE_PER_GAME:.2f}억원")
 
 elif page == "Players":
     st.markdown('<div class="section-title">PLAYER MARKET</div>', unsafe_allow_html=True)
@@ -3346,8 +3506,7 @@ elif page == "Results":
     <div class="panel">
         <div class="panel-title">Completed Games Only</div>
         <div style="line-height:1.7;color:#475569;">
-            이 탭은 이미 시뮬레이션을 끝낸 경기 결과만 보여줍니다.
-            앞으로 치를 경기는 Simulation 탭에서 점수 없이 일정만 확인합니다.
+            이미 시뮬레이션을 끝낸 경기 결과, 내 선택 카드, 그리고 AI 팀들의 당시 라인업을 확인합니다.
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -3369,20 +3528,32 @@ elif page == "Results":
                 "Day": item.get("day", ""),
                 "Result": item.get("match", ""),
                 "My Fantasy Points": user_points,
+                "All-Star": "ON" if item.get("allstar_applied") else "-",
             })
-        st.markdown(table_html(result_rows, ["No.", "Date", "Time", "GW", "Day", "Result", "My Fantasy Points"]), unsafe_allow_html=True)
+        st.markdown(table_html(result_rows, ["No.", "Date", "Time", "GW", "Day", "Result", "My Fantasy Points", "All-Star"]), unsafe_allow_html=True)
 
-        last = st.session_state.simulation_history[-1]
-        st.markdown("### Latest Completed Game")
-        st.markdown(f"**GW {last.get('gameweek')} Day {last.get('day')}** · {last.get('date')} {last.get('time')} · {last.get('match')}")
+        for i, item in enumerate(reversed(st.session_state.simulation_history), start=1):
+            title = f"{item.get('date','')} · GW {item.get('gameweek')} Day {item.get('day')} · {item.get('match','')}"
+            with st.expander(title, expanded=(i == 1)):
+                point_rows = []
+                for team, pts in sorted(item.get("team_points", {}).items(), key=lambda x: -x[1]):
+                    point_rows.append({"Fantasy Team": team, "Game Points": f"{pts:.2f}"})
+                st.markdown("#### Fantasy Points")
+                st.markdown(table_html(point_rows, ["Fantasy Team", "Game Points"]), unsafe_allow_html=True)
 
-        point_rows = []
-        for team, pts in sorted(last.get("team_points", {}).items(), key=lambda x: -x[1]):
-            point_rows.append({"Fantasy Team": team, "Game Points": f"{pts:.2f}"})
-        st.markdown(table_html(point_rows, ["Fantasy Team", "Game Points"]), unsafe_allow_html=True)
+                st.markdown("#### 라인업 구성 보기")
+                lineup_rows = []
+                for fantasy_team, snap in item.get("lineups", {}).items():
+                    lineup_rows.append({
+                        "Fantasy Team": fantasy_team,
+                        "Captain": snap.get("captain", "-"),
+                        "Starting 5": " / ".join(snap.get("starting", [])),
+                        "Bench": " / ".join(snap.get("bench", [])),
+                    })
+                st.markdown(table_html(lineup_rows, ["Fantasy Team", "Captain", "Starting 5", "Bench"]), unsafe_allow_html=True)
 
-        with st.expander("Latest game price changes"):
-            st.markdown(table_html(last.get("price_changes", []), ["Player", "Team", "Game Score", "Old Price", "Change", "New Price"]), unsafe_allow_html=True)
+                st.markdown("#### Price Changes")
+                st.markdown(table_html(item.get("price_changes", []), ["Player", "Team", "Game Score", "Old Price", "Change", "New Price"]), unsafe_allow_html=True)
 
 
 elif page == "Help":
@@ -3422,7 +3593,7 @@ elif page == "Help":
     ### Chips / Transactions Guide
     - Captain은 My Team의 `SET YOUR LINE-UP` 아래 Captain 선택 박스에서 고릅니다.
     - Captain은 별도 Activate 버튼 없이 자동 적용됩니다. 선택한 Captain의 다음 경기 점수가 한 번 더 더해져 사실상 2배가 됩니다.
-    - `Activate All-Star`: Gameweek마다 1회 사용할 수 있습니다. 다음으로 시뮬레이션하는 실제 경기 1경기에서 내 Starting 5 총점에 +20% 보너스가 붙고, 해당 GW에서는 자동으로 Used 상태가 됩니다.
+    - All-Star는 Home 메뉴가 아니라 Line-up Builder에서 최종 라인업을 확정한 뒤 사용할 수 있습니다. Gameweek마다 1회 사용할 수 있고, 다음으로 시뮬레이션하는 실제 경기 1경기에서 내 Starting 5 총점에 +20% 보너스가 붙습니다.
     - 점수 계수: Starting 5 = 100%, Bench = 50%.
     - Transfers are unlimited every Gameday. 이적 횟수 제한과 점수 페널티는 없습니다.
     - 단, 현재 Gameday에 경기하는 두 팀 선수만 로스터로 선택할 수 있습니다.
