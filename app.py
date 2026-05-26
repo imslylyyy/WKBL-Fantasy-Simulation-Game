@@ -6,6 +6,7 @@ import base64
 import mimetypes
 import math
 import re
+import random
 from pathlib import Path
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide")
@@ -1027,7 +1028,7 @@ def header():
     """, unsafe_allow_html=True)
 
 def nav():
-    items = ["Home", "My Team", "Players", "Simulation", "Help"]
+    items = ["Home", "My Team", "Players", "Simulation", "Results", "Help"]
     st.markdown('<div class="nav-wrap">', unsafe_allow_html=True)
     cols = st.columns(len(items))
 
@@ -1747,13 +1748,15 @@ def load_game_results():
 
     return parsed, games, encoding_used
 
-def game_match_label(game):
+def game_match_label(game, show_score=False):
     home = game.get("home_team", "") or ""
     away = game.get("away_team", "") or ""
-    hs = game.get("home_score", "") or ""
-    a_s = game.get("away_score", "") or ""
+    hs = clean(game.get("home_score", ""))
+    a_s = clean(game.get("away_score", ""))
     if home and away:
-        return f"{home} {hs} vs {away} {a_s}".strip()
+        if show_score and hs != "" and a_s != "":
+            return f"{home} {hs} vs {away} {a_s}"
+        return f"{home} vs {away}"
     teams = []
     for row in game.get("rows", []):
         t = row.get("team_2025_26", "")
@@ -1953,7 +1956,7 @@ def process_one_game(game, players_list):
         "time": game.get("time", ""),
         "gameweek": game.get("gameweek", ""),
         "day": game.get("day", ""),
-        "match": game_match_label(game),
+        "match": game_match_label(game, show_score=True),
         "team_points": game_team_points,
         "price_changes": sorted(price_changes, key=lambda x: abs(float(x["Change"].replace("억원",""))), reverse=True)[:10],
     })
@@ -1965,14 +1968,6 @@ def process_one_game(game, players_list):
 
     update_league_table_from_scores()
     apply_market_state(players_list)
-
-def process_next_gameweek(games, players_list):
-    idx = st.session_state.simulation_game_index
-    if idx >= len(games):
-        return
-    gw = games[idx].get("gameweek")
-    while st.session_state.simulation_game_index < len(games) and games[st.session_state.simulation_game_index].get("gameweek") == gw:
-        process_one_game(games[st.session_state.simulation_game_index], players_list)
 
 def game_results_template():
     return (
@@ -2460,7 +2455,10 @@ elif page == "Simulation":
 
         if st.button("Start 2025-26 Simulation", use_container_width=True):
             if not st.session_state.user_roster_keys:
-                st.session_state.user_roster_keys = generate_auto_roster(players, seed=101)
+                start_allowed = game_allowed_teams(games_2025_26[0]) if game_csv_loaded and games_2025_26 else []
+                start_pool = [p for p in players if not start_allowed or p.get("team_2025_26") in start_allowed]
+                st.session_state.user_roster_keys = generate_auto_roster(start_pool, seed=101)
+                st.session_state.roster_select = list(st.session_state.user_roster_keys)
                 st.session_state.user_starting_keys = auto_starting_keys(st.session_state.user_roster_keys, players, st.session_state.user_formation)
                 st.session_state.user_captain_key = st.session_state.user_starting_keys[0] if st.session_state.user_starting_keys else None
             reset_simulation_runtime(players)
@@ -2487,6 +2485,7 @@ elif page == "Simulation":
         if game_csv_loaded and not finished:
             g = games_2025_26[current_idx]
             st.markdown("### Next Game")
+            st.caption("예정 경기이므로 여기서는 최종 점수를 보여주지 않습니다. 완료된 결과는 Results 탭에서 확인하세요.")
             st.markdown(
                 f"**Game {current_idx + 1}** · GW {g.get('gameweek')} Day {g.get('day')} · "
                 f"{g.get('date')} {g.get('time')} · {game_match_label(g)}"
@@ -2495,16 +2494,13 @@ elif page == "Simulation":
             if allowed:
                 st.info(f"이번 경기는 {' vs '.join(allowed)} 선수만 선택/득점할 수 있습니다. My Team에서 이 두 팀 선수로 Gameday roster를 맞춘 뒤 시뮬레이션하세요.")
 
-            b1, b2, b3 = st.columns(3)
-            with b1:
-                if st.button("Simulate Next Game", use_container_width=True):
-                    process_one_game(games_2025_26[st.session_state.simulation_game_index], players)
-                    st.rerun()
-            with b2:
-                if st.button("Go to My Team", use_container_width=True):
-                    go_to("My Team")
-                    st.rerun()
-            with b3:
+            st.markdown("### Play One Game")
+            if st.button("Simulate Next Game", use_container_width=True):
+                process_one_game(games_2025_26[st.session_state.simulation_game_index], players)
+                st.rerun()
+
+            with st.expander("Reset / restart simulation"):
+                st.caption("실수로 처음부터 다시 시작해야 할 때만 사용하세요.")
                 if st.button("Reset Simulation", use_container_width=True):
                     st.session_state.simulation_started = False
                     st.session_state.simulation_user_team = None
@@ -2552,6 +2548,52 @@ elif page == "Simulation":
             with st.expander("Top price changes from this game"):
                 st.markdown(table_html(last["price_changes"], ["Player", "Team", "Game Score", "Old Price", "Change", "New Price"]), unsafe_allow_html=True)
 
+elif page == "Results":
+    st.markdown('<div class="section-title">GAME RESULTS</div>', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="panel">
+        <div class="panel-title">Completed Games Only</div>
+        <div style="line-height:1.7;color:#475569;">
+            이 탭은 이미 시뮬레이션을 끝낸 경기 결과만 보여줍니다.
+            앞으로 치를 경기는 Simulation 탭에서 점수 없이 일정만 확인합니다.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not st.session_state.simulation_history:
+        st.info("아직 완료된 경기가 없습니다. Simulation 탭에서 Simulate Next Game을 누르면 이곳에 경기 결과가 쌓입니다.")
+    else:
+        result_rows = []
+        user_team = st.session_state.simulation_user_team
+        for i, item in enumerate(st.session_state.simulation_history, start=1):
+            user_points = ""
+            if user_team:
+                user_points = f"{item.get('team_points', {}).get(user_team, 0.0):.2f}"
+            result_rows.append({
+                "No.": i,
+                "Date": item.get("date", ""),
+                "Time": item.get("time", ""),
+                "GW": item.get("gameweek", ""),
+                "Day": item.get("day", ""),
+                "Result": item.get("match", ""),
+                "My Fantasy Points": user_points,
+            })
+        st.markdown(table_html(result_rows, ["No.", "Date", "Time", "GW", "Day", "Result", "My Fantasy Points"]), unsafe_allow_html=True)
+
+        last = st.session_state.simulation_history[-1]
+        st.markdown("### Latest Completed Game")
+        st.markdown(f"**GW {last.get('gameweek')} Day {last.get('day')}** · {last.get('date')} {last.get('time')} · {last.get('match')}")
+
+        point_rows = []
+        for team, pts in sorted(last.get("team_points", {}).items(), key=lambda x: -x[1]):
+            point_rows.append({"Fantasy Team": team, "Game Points": f"{pts:.2f}"})
+        st.markdown(table_html(point_rows, ["Fantasy Team", "Game Points"]), unsafe_allow_html=True)
+
+        with st.expander("Latest game price changes"):
+            st.markdown(table_html(last.get("price_changes", []), ["Player", "Team", "Game Score", "Old Price", "Change", "New Price"]), unsafe_allow_html=True)
+
+
 elif page == "Help":
     st.markdown('<div class="section-title">HOW TO PLAY</div>', unsafe_allow_html=True)
     st.markdown("""
@@ -2597,7 +2639,7 @@ elif page == "Help":
     ### Important Simulation Detail
     - 각 실제 경기에서는 그 경기에 출전한 선수만 점수를 얻습니다.
     - 예를 들어 다음 경기가 BNK썸 vs 신한은행이면, My Team에서는 BNK썸과 신한은행 선수만 선택할 수 있습니다.
-    - 한 번에 여러 경기를 넘기기보다, 경기마다 My Team에서 로스터와 Starting 5를 맞춘 뒤 `Simulate Next Game`을 누르는 방식이 자연스럽습니다.
+    - Simulation 탭에는 `Simulate Next Game`만 남겨두었습니다. 경기마다 My Team에서 로스터와 Starting 5를 맞춘 뒤 한 경기씩 진행하는 방식입니다.
     """)
 
 # =========================
