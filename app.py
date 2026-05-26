@@ -530,6 +530,59 @@ def global_leaderboard_rows(include_current=True):
         row["Rank"] = i
     return rows
 
+def _same_result_game(a: dict, b: dict) -> bool:
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return False
+    a_id, b_id = str(a.get("game_id", "")).strip(), str(b.get("game_id", "")).strip()
+    if a_id and b_id and a_id == b_id:
+        return True
+    keys = ["date", "time", "gameweek", "day", "match"]
+    return all(str(a.get(k, "")).strip() == str(b.get(k, "")).strip() for k in keys)
+
+def participant_result_records(reference_item: dict, include_current=True):
+    """Return one row per real registered participant for this completed game.
+
+    Results should not show the temporary AI teams generated inside each user's
+    private simulation.  This function scans the saved user database and picks
+    only each registered manager's own result/lineup for the same game.
+    """
+    if include_current and st.session_state.get("current_user_id"):
+        save_current_user_progress()
+    db = load_user_db()
+    records = []
+    for uid, rec in db.get("users", {}).items():
+        progress = rec.get("progress", {}) if isinstance(rec.get("progress", {}), dict) else {}
+        manager = rec.get("manager_name") or progress.get("manager_name") or uid
+        history = progress.get("simulation_history", []) if isinstance(progress.get("simulation_history", []), list) else []
+        matched = None
+        for item in history:
+            if _same_result_game(item, reference_item):
+                matched = item
+                break
+        if not matched:
+            records.append({
+                "team": manager,
+                "points": None,
+                "status": "미확인",
+                "lineup": None,
+                "updated": rec.get("updated_at", ""),
+            })
+            continue
+        team_name = progress.get("simulation_user_team") or manager
+        points_map = matched.get("team_points", {}) if isinstance(matched.get("team_points", {}), dict) else {}
+        points = points_map.get(team_name, points_map.get(manager, 0.0))
+        lineups = matched.get("lineups", {}) if isinstance(matched.get("lineups", {}), dict) else {}
+        lineup = lineups.get(team_name) or lineups.get(manager)
+        records.append({
+            "team": manager,
+            "points": round(float(points or 0.0), 2),
+            "status": "완료",
+            "lineup": lineup,
+            "updated": rec.get("updated_at", ""),
+        })
+    records.sort(key=lambda r: (r["points"] is None, -(r["points"] or 0.0), str(r["team"])))
+    return records
+
 
 def delete_user_by_id(user_id: str):
     db = load_user_db()
@@ -4290,22 +4343,42 @@ elif page == "Results":
         for i, item in enumerate(reversed(st.session_state.simulation_history), start=1):
             title = f"{item.get('date','')} · GW {item.get('gameweek')} Day {item.get('day')} · {item.get('match','')}"
             with st.expander(title, expanded=(i == 1)):
+                participant_records = participant_result_records(item, include_current=True)
+
                 point_rows = []
-                for team, pts in sorted(item.get("team_points", {}).items(), key=lambda x: -x[1]):
-                    point_rows.append({"Fantasy Team": team, "Game Points": f"{pts:.2f}"})
+                for rec in participant_records:
+                    point_rows.append({
+                        "Fantasy Team": rec["team"],
+                        "Game Points": "-" if rec["points"] is None else f"{rec['points']:.2f}",
+                        "Status": rec["status"],
+                    })
                 st.markdown("#### Fantasy Points")
-                st.markdown(table_html(point_rows, ["Fantasy Team", "Game Points"]), unsafe_allow_html=True)
+                st.caption("AI 자동 팀은 제외하고, League Table에 등록된 실제 참가자 결과만 표시합니다.")
+                st.markdown(table_html(point_rows, ["Fantasy Team", "Game Points", "Status"]), unsafe_allow_html=True)
 
                 st.markdown("#### 라인업 구성 보기")
                 lineup_rows = []
-                for fantasy_team, snap in item.get("lineups", {}).items():
+                for rec in participant_records:
+                    snap = rec.get("lineup") or {}
                     lineup_rows.append({
-                        "Fantasy Team": fantasy_team,
-                        "Captain": snap.get("captain", "-"),
-                        "Starting 5": " / ".join(snap.get("starting", [])),
-                        "Bench": " / ".join(snap.get("bench", [])),
+                        "Fantasy Team": rec["team"],
+                        "Captain": snap.get("captain", "-") if snap else "-",
+                        "Starting 5": " / ".join(snap.get("starting", [])) if snap else "아직 결과 미확인",
+                        "Bench": " / ".join(snap.get("bench", [])) if snap else "-",
                     })
                 st.markdown(table_html(lineup_rows, ["Fantasy Team", "Captain", "Starting 5", "Bench"]), unsafe_allow_html=True)
+
+                with st.expander("참고: 이 경기의 내부 AI 팀 결과 보기", expanded=False):
+                    ai_point_rows = []
+                    participant_names = {rec["team"] for rec in participant_records}
+                    for team, pts in sorted(item.get("team_points", {}).items(), key=lambda x: -x[1]):
+                        if team in participant_names or team == st.session_state.get("simulation_user_team"):
+                            continue
+                        ai_point_rows.append({"AI Team": team, "Game Points": f"{pts:.2f}"})
+                    if ai_point_rows:
+                        st.markdown(table_html(ai_point_rows, ["AI Team", "Game Points"]), unsafe_allow_html=True)
+                    else:
+                        st.caption("표시할 AI 팀 결과가 없습니다.")
 
                 st.markdown("#### Price Changes")
                 st.markdown(table_html(item.get("price_changes", []), ["Player", "Team", "Game Score", "Old Price", "Change", "New Price"]), unsafe_allow_html=True)
