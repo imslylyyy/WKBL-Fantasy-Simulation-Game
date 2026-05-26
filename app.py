@@ -5,7 +5,6 @@ import csv
 import base64
 import mimetypes
 import re
-from urllib.parse import quote
 from pathlib import Path
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide")
@@ -943,19 +942,30 @@ def header():
     """, unsafe_allow_html=True)
 
 def nav():
-    # Real <a href="?page=..."> links are used instead of Streamlit buttons.
-    # This makes the browser history work naturally, so Alt + Left / Alt + Right
-    # moves backward and forward through visited app pages.
+    # Use Streamlit buttons instead of <a> links.
+    # This keeps navigation in the same browser tab.
+    # go_to() also writes the current page into the URL query parameter,
+    # so browser Back/Forward, including Alt + Left / Alt + Right, can move
+    # through visited pages without opening new tabs.
     items = ["Home", "My Team", "Players", "Simulation", "Help"]
-    links = []
-    for item in items:
-        active = " active" if item == st.session_state.page else ""
-        links.append(f'<a class="nav-link{active}" href="?page={quote(item)}">{item}</a>')
-    links.append('<a class="nav-link" href="?page=Home">Sign out</a>')
-    st.markdown(
-        '<div class="nav-wrap"><div class="nav-links">' + "".join(links) + '</div></div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="nav-wrap">', unsafe_allow_html=True)
+    cols = st.columns(len(items) + 1)
+
+    for col, item in zip(cols[:-1], items):
+        with col:
+            if item == st.session_state.page:
+                st.markdown(f'<div class="active-tab">{item}</div>', unsafe_allow_html=True)
+            else:
+                if st.button(item, key=f"topnav_{item}", use_container_width=True):
+                    go_to(item)
+                    st.rerun()
+
+    with cols[-1]:
+        if st.button("Sign out", key="topnav_signout", use_container_width=True):
+            go_to("Home")
+            st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 def table_html(rows, columns):
     html = "<table style='width:100%;border-collapse:collapse;background:white;border-radius:14px;overflow:hidden;'>"
@@ -1314,7 +1324,7 @@ elif page == "Help":
     st.markdown('<div class="section-title">HOW TO PLAY</div>', unsafe_allow_html=True)
     st.markdown("""
     ### Browser Navigation
-- Use **Alt + ←** and **Alt + →** to move backward and forward through visited pages.
+- Use **Alt + ←** and **Alt + →** to move backward and forward through visited pages in the same tab.
 
 ### Core Rules
     - Roster size: 10 players
