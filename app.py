@@ -12,7 +12,7 @@ from pathlib import Path
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v18.0 / clickable quest + staged game flow"
+APP_VERSION = "Final Version v18.1 / quest map error fix"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -1034,38 +1034,43 @@ button[kind="secondary"] {
 
 def player_card(p, priority=None, captain=False, allstar=False, compact=False):
     """
-    NBA-mobile-card-inspired visual card.
-    Back Court = blue/cyan frame, Front Court = pink/gold frame.
+    Earlier clean WKBL fantasy card style.
+    Back Court = blue card, Front Court = pink card.
+    Team logo is shown in the top-left badge.
     """
     price = p.get("current_price", p.get("initial_price", MIN_PRICE))
     team = p.get("team_2025_26", "")
     is_back = p.get("position_label") == "Back Court"
-    accent = "#38bdf8" if is_back else "#f472b6"
-    accent2 = "#064EA4" if is_back else "#E91E73"
-    pos_label = "BACK COURT" if is_back else "FRONT COURT"
-    pos_short = p.get("position_short", "?")
-    role_badge = "B" if is_back else "F"
-    captain_html = '<div class="captain-badge">👑 C</div>' if captain else ""
-    priority_html = f'<div class="serial">#{priority}</div>' if priority else ""
-    allstar_class = " allstar" if allstar else ""
-    compact_class = " compact" if compact else ""
+    top_class = "card-top-blue" if is_back else "card-top-pink"
+    name_class = "name-blue" if is_back else "name-pink"
+    pos_text = "BACK COURT" if is_back else "FRONT COURT"
+    pos_short = "B" if is_back else "F"
+    captain_html = '<div class="captain">👑</div>' if captain else ""
+    priority_html = f'<div class="priority">#{priority}</div>' if priority else ""
+    allstar_class = " allstar-glow" if allstar else ""
+    initial = p["name"][0]
 
     img_path = find_image(p)
     data_url = image_data_url(img_path)
     logo_url = team_logo_data_url(team)
+
     if data_url:
-        photo_html = f'<img class="photo" src="{data_url}" alt="{p["name"]}">'
+        avatar_html = f'<div class="avatar"><img src="{data_url}" alt="{p["name"]}"></div>'
     else:
-        photo_html = f'<div class="photo-fallback">{p["name"][0]}</div>'
+        avatar_html = f'<div class="avatar avatar-fallback">{initial}</div>'
 
     if logo_url:
-        logo_html = f'<img class="mini-logo" src="{logo_url}" alt="{team}">'
+        team_badge_html = f'<div class="team-badge"><img src="{logo_url}" alt="{team}"></div>'
     else:
-        logo_html = '<div class="mini-logo-text">WKBL</div>'
+        team_badge_html = f'<div class="team-badge team-badge-text">{team}</div>'
 
-    data_label = "NO DATA" if not p.get("previous_data") else f'FS {p.get("fantasy_score", 0):.1f}'
-    height = 330 if not compact else 320
-    delay = 0.055 * ((int(priority) - 1) if isinstance(priority, int) else 0)
+    fs_label = "NO DATA" if not p.get("previous_data") else f'FS {float(p.get("fantasy_score", 0)):.1f}'
+    delay = 0.06 * ((int(priority) - 1) if isinstance(priority, int) else 0)
+    card_height = 250 if compact else 292
+    top_height = 112 if compact else 130
+    avatar_size = 76 if compact else 92
+    salary_size = 22 if compact else 28
+    name_size = 14 if compact else 17
 
     html = f"""
     <!DOCTYPE html>
@@ -1073,58 +1078,200 @@ def player_card(p, priority=None, captain=False, allstar=False, compact=False):
     <head>
     <meta charset="utf-8">
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;700&family=Noto+Sans+KR:wght@400;700;900&display=swap');
-    body {{ margin:0; padding:8px; background:transparent; font-family:'Noto Sans KR', sans-serif; }}
-    .card {{
-        position:relative; height:{height-16}px; border-radius:22px; overflow:hidden;
-        background:
-          radial-gradient(circle at 50% 18%, rgba(255,255,255,.24), transparent 24%),
-          linear-gradient(155deg, #0f172a 0%, #111827 44%, #030712 100%);
-        border:3px solid {accent}; box-shadow:0 14px 28px rgba(0,0,0,.26), inset 0 0 0 2px rgba(255,255,255,.11);
-        animation: slam .42s cubic-bezier(.18,1.45,.36,1) both; animation-delay:{delay:.2f}s;
-    }}
-    @keyframes slam {{ 0% {{ transform:translateY(22px) scale(.88); opacity:0; filter:blur(2px); }} 100% {{ transform:translateY(0) scale(1); opacity:1; filter:blur(0); }} }}
-    .card::before {{
-        content:""; position:absolute; inset:9px; border-radius:17px; border:1px solid rgba(255,255,255,.16);
-        background:linear-gradient(145deg, rgba(255,255,255,.10), transparent 38%);
-        pointer-events:none;
-    }}
-    .card::after {{
-        content:""; position:absolute; left:-40%; top:-20%; width:120%; height:45%;
-        background:linear-gradient(120deg, transparent, rgba(255,255,255,.18), transparent); transform:rotate(-18deg);
-    }}
-    .allstar {{ border-color:#facc15; box-shadow:0 0 0 4px rgba(250,204,21,.22), 0 0 38px rgba(250,204,21,.68), 0 14px 28px rgba(0,0,0,.26); }}
-    .frame-strip {{ position:absolute; left:0; top:0; bottom:0; width:10px; background:linear-gradient(180deg,{accent},#facc15,{accent2}); }}
-    .topbar {{ position:absolute; top:12px; left:18px; right:16px; display:flex; justify-content:space-between; align-items:center; z-index:3; }}
-    .mini-logo {{ width:{32 if compact else 38}px; height:{32 if compact else 38}px; object-fit:contain; background:rgba(255,255,255,.94); border-radius:10px; padding:3px; }}
-    .mini-logo-text {{ color:white; font-weight:900; font-size:10px; }}
-    .pos-pill {{ color:#e5e7eb; border:1px solid rgba(255,255,255,.22); border-radius:999px; padding:4px 8px; font-size:{9 if compact else 10}px; font-weight:900; letter-spacing:.5px; background:rgba(255,255,255,.08); }}
-    .photo-wrap {{ position:absolute; top:{48 if compact else 56}px; left:50%; transform:translateX(-50%); width:{96 if compact else 122}px; height:{96 if compact else 122}px; border-radius:20px; overflow:hidden; background:linear-gradient(135deg,{accent},#111827); border:3px solid rgba(255,255,255,.88); box-shadow:0 10px 22px rgba(0,0,0,.32); z-index:2; }}
-    .photo {{ width:100%; height:100%; object-fit:cover; display:block; }}
-    .photo-fallback {{ width:100%; height:100%; display:flex; align-items:center; justify-content:center; color:white; font-size:{38 if compact else 48}px; font-weight:900; }}
-    .price {{ position:absolute; top:{142 if compact else 180}px; left:50%; transform:translateX(-50%); width:78%; padding:5px 0; border-radius:12px; background:white; color:#020617; font-family:'Oswald',sans-serif; font-size:{24 if compact else 30}px; font-weight:900; letter-spacing:.3px; text-align:center; z-index:3; box-shadow:0 8px 16px rgba(0,0,0,.28); }}
-    .name {{ position:absolute; left:14px; right:14px; bottom:{48 if compact else 55}px; padding:7px 8px; text-align:center; background:linear-gradient(90deg,{accent2},{accent}); color:white; border-radius:12px; font-weight:900; font-size:{14 if compact else 17}px; z-index:3; box-shadow:0 8px 16px rgba(0,0,0,.26); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-    .footer {{ position:absolute; left:14px; right:14px; bottom:13px; display:flex; justify-content:space-between; align-items:center; z-index:3; color:#dbeafe; font-family:'Oswald',sans-serif; }}
-    .role {{ background:#0b1220; border:2px solid {accent}; border-radius:10px; padding:3px 7px; font-size:{17 if compact else 21}px; font-weight:900; color:white; }}
-    .score {{ color:#facc15; font-size:{14 if compact else 16}px; font-weight:900; }}
-    .serial {{ position:absolute; left:15px; top:{148 if compact else 174}px; z-index:5; width:34px; height:34px; border-radius:999px; display:flex; align-items:center; justify-content:center; background:#facc15; color:#111827; border:3px solid white; font-weight:900; box-shadow:0 6px 12px rgba(0,0,0,.25); }}
-    .captain-badge {{ position:absolute; right:14px; top:{146 if compact else 174}px; z-index:5; border-radius:999px; background:#facc15; color:#111827; border:3px solid white; padding:5px 8px; font-weight:900; box-shadow:0 6px 12px rgba(0,0,0,.25); }}
+        @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;700&family=Noto+Sans+KR:wght@400;700;900&display=swap');
+        body {{ margin:0; padding:8px; font-family:'Noto Sans KR', sans-serif; background:transparent; }}
+        .player-card {{
+            position:relative;
+            width:100%;
+            height:{card_height - 16}px;
+            box-sizing:border-box;
+            background:white;
+            border-radius:20px;
+            overflow:hidden;
+            border:1px solid #e5e7eb;
+            box-shadow:0 10px 22px rgba(15,23,42,.16);
+            text-align:center;
+            animation:pop .42s cubic-bezier(.2,1.5,.4,1) both;
+            animation-delay:{delay:.2f}s;
+        }}
+        @keyframes pop {{
+            0% {{ transform:translateY(18px) scale(.86); opacity:0; filter:blur(2px); }}
+            100% {{ transform:translateY(0) scale(1); opacity:1; filter:blur(0); }}
+        }}
+        .allstar-glow {{
+            border:3px solid #facc15;
+            box-shadow:0 0 0 4px rgba(250,204,21,.24), 0 0 34px rgba(250,204,21,.70), 0 10px 22px rgba(15,23,42,.18);
+        }}
+        .card-top-blue {{
+            position:relative;
+            height:{top_height}px;
+            padding-top:10px;
+            background:linear-gradient(135deg,#bfdbfe 0%,#38bdf8 34%,#064EA4 100%);
+        }}
+        .card-top-pink {{
+            position:relative;
+            height:{top_height}px;
+            padding-top:10px;
+            background:linear-gradient(135deg,#fbcfe8 0%,#f472b6 34%,#E91E73 100%);
+        }}
+        .card-top-blue::after, .card-top-pink::after {{
+            content:"";
+            position:absolute;
+            inset:0;
+            background:radial-gradient(circle at 62% 15%,rgba(255,255,255,.36),transparent 32%), linear-gradient(120deg,rgba(255,255,255,.20),transparent 42%);
+            pointer-events:none;
+        }}
+        .team-badge {{
+            position:absolute;
+            top:12px;
+            left:12px;
+            width:42px;
+            height:42px;
+            border-radius:12px;
+            background:rgba(255,255,255,.94);
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            box-shadow:0 4px 12px rgba(15,23,42,.18);
+            z-index:4;
+        }}
+        .team-badge img {{ width:34px; height:34px; object-fit:contain; }}
+        .team-badge-text {{ width:auto; max-width:72px; padding:0 6px; font-size:9px; font-weight:900; color:#111827; }}
+        .pos-pill {{
+            position:absolute;
+            top:14px;
+            right:12px;
+            background:rgba(255,255,255,.94);
+            border-radius:999px;
+            padding:5px 9px;
+            color:#111827;
+            font-size:10px;
+            font-weight:900;
+            letter-spacing:.2px;
+            z-index:4;
+        }}
+        .avatar {{
+            position:relative;
+            z-index:3;
+            width:{avatar_size}px;
+            height:{avatar_size}px;
+            border-radius:999px;
+            background:white;
+            margin:{26 if compact else 30}px auto 0;
+            border:4px solid white;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            overflow:hidden;
+            font-size:32px;
+            font-weight:900;
+            color:#111827;
+            box-shadow:0 8px 18px rgba(15,23,42,.22);
+        }}
+        .avatar img {{ width:100%; height:100%; object-fit:cover; }}
+        .salary {{
+            font-family:'Oswald', sans-serif;
+            font-size:{salary_size}px;
+            line-height:1.1;
+            font-weight:900;
+            color:#111827;
+            padding:9px 4px 7px;
+            background:white;
+            white-space:nowrap;
+        }}
+        .name-blue, .name-pink {{
+            color:white;
+            font-weight:900;
+            padding:7px 6px;
+            font-size:{name_size}px;
+            line-height:1.1;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }}
+        .name-blue {{ background:#064EA4; }}
+        .name-pink {{ background:#E91E73; }}
+        .meta {{
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+            gap:8px;
+            padding:8px 10px;
+            background:#f8fafc;
+            color:#475569;
+            font-size:{11 if compact else 12}px;
+            font-weight:900;
+        }}
+        .role {{
+            min-width:28px;
+            height:28px;
+            border-radius:9px;
+            background:#111827;
+            color:white;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            font-family:'Oswald', sans-serif;
+            font-size:18px;
+            border:2px solid {'#38bdf8' if is_back else '#f472b6'};
+            flex:0 0 auto;
+        }}
+        .fs {{ color:#111827; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+        .captain {{
+            position:absolute;
+            right:10px;
+            top:{top_height - 18}px;
+            width:35px;
+            height:35px;
+            border-radius:999px;
+            background:#facc15;
+            color:#111827;
+            border:4px solid white;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            font-size:18px;
+            font-weight:900;
+            z-index:9;
+            box-shadow:0 6px 14px rgba(0,0,0,.22);
+        }}
+        .priority {{
+            position:absolute;
+            left:10px;
+            top:{top_height - 18}px;
+            min-width:35px;
+            height:35px;
+            padding:0 5px;
+            border-radius:999px;
+            background:#facc15;
+            color:#111827;
+            border:4px solid white;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            font-size:13px;
+            font-weight:900;
+            z-index:9;
+            box-shadow:0 6px 14px rgba(0,0,0,.22);
+        }}
     </style>
     </head>
     <body>
-      <div class="card{allstar_class}{compact_class}">
-        <div class="frame-strip"></div>
-        {priority_html}{captain_html}
-        <div class="topbar">{logo_html}<div class="pos-pill">{pos_label}</div></div>
-        <div class="photo-wrap">{photo_html}</div>
-        <div class="price">{format_price(price)}</div>
-        <div class="name">{p["name"]}</div>
-        <div class="footer"><div class="role">{role_badge}</div><div class="score">{data_label}</div></div>
-      </div>
+        <div class="player-card{allstar_class}">
+            {priority_html}{captain_html}
+            <div class="{top_class}">
+                {team_badge_html}
+                <div class="pos-pill">{pos_text}</div>
+                {avatar_html}
+            </div>
+            <div class="salary">{format_price(price)}</div>
+            <div class="{name_class}">{p["name"]}</div>
+            <div class="meta"><div class="role">{pos_short}</div><div class="fs">{fs_label}</div></div>
+        </div>
     </body>
     </html>
     """
-    components.html(html, height=height, scrolling=False)
+    components.html(html, height=card_height, scrolling=False)
 
 def render_roster_card_selector(available_players, selected_keys, players_list):
     st.markdown('<div class="roster-market"><div class="roster-market-title">CARD PLAYER MARKET</div><div class="card-hint">카드 아래 버튼으로 선수를 추가/제외하세요. Back Court는 파란색, Front Court는 핑크색으로 표시됩니다.</div>', unsafe_allow_html=True)
@@ -1142,7 +1289,7 @@ def render_roster_card_selector(available_players, selected_keys, players_list):
     for idx, p in enumerate(ordered):
         k = player_key(p)
         selected = k in selected_set
-        with cols[idx % 4]:
+        with cols[idx % 2]:
             player_card(p, compact=True)
             css_class = "selected-card-button" if selected else "available-card-button"
             st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
@@ -2396,7 +2543,7 @@ def quest_map_html(games, current_index):
     .korea-map svg {{ position:absolute; inset:0; width:100%; height:100%; }}
     .map-shape {{ fill:rgba(255,255,255,.08); stroke:rgba(255,255,255,.20); stroke-width:2; }}
     .map-dot {{ fill:rgba(255,255,255,.18); }}
-    .quest-link { text-decoration:none; color:inherit; }
+    .quest-link {{ text-decoration:none; color:inherit; }}
     .quest-node {{ position:absolute; width:126px; min-height:112px; transform:translate(-50%,-50%); border-radius:20px; padding:10px; text-align:center; color:white; background:rgba(15,23,42,.82); border:2px solid rgba(255,255,255,.22); box-shadow:0 10px 26px rgba(0,0,0,.30); cursor:pointer; transition:.18s ease; }}
     .quest-node:hover {{ transform:translate(-50%,-54%) scale(1.04); filter:brightness(1.14); }}
     .quest-node.current {{ border-color:#facc15; box-shadow:0 0 0 4px rgba(250,204,21,.22), 0 0 32px rgba(250,204,21,.60); }}
