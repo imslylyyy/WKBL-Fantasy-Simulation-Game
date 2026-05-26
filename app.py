@@ -12,6 +12,7 @@ import math
 import re
 import random
 import string
+import unicodedata
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import calendar
@@ -19,7 +20,7 @@ import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v24.0 / subscriber login + saved progress + timed results"
+APP_VERSION = "Final Version v25.0 / strict login + admin schedule control"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -72,9 +73,12 @@ BGM_AUDIO_PATH = ASSET_DIR / "audio" / "bgm.mp3"
 DATA_DIR = Path("data")
 USER_DB_PATH = DATA_DIR / "wkbl_fantasy_users.json"
 KST = timezone(timedelta(hours=9))
-PUBLIC_FIRST_GAME_START = datetime(2026, 5, 27, 6, 30, tzinfo=KST)
-PUBLIC_RESULT_DELAY = timedelta(hours=3)
+DEFAULT_PUBLIC_FIRST_GAME_START = datetime(2026, 5, 27, 6, 30, tzinfo=KST)
+DEFAULT_PUBLIC_RESULT_DELAY_HOURS = 3.0
 PUBLIC_GAME_INTERVAL = timedelta(days=1)
+ADMIN_MANAGER_NAME = "관리자"
+ADMIN_USER_ID = "__admin__"
+DEFAULT_ADMIN_PASSWORD = "wkbl-admin-2026"
 
 ROSTER_SIZE = 10
 ROSTER_BACK_COUNT = 5
@@ -107,6 +111,9 @@ if "current_user_id" not in st.session_state:
 
 if "login_mode" not in st.session_state:
     st.session_state.login_mode = "login_or_register"
+
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
 
 if "fantasy_team_names" not in st.session_state:
     st.session_state.fantasy_team_names = []
@@ -182,7 +189,24 @@ def get_fantasy_teams():
     return ["나의 팀"] + generate_ai_team_names(5)
 
 def user_key_from_name(name: str) -> str:
-    return re.sub(r"\s+", " ", clean(name)).casefold()
+    # Normalize visually identical names so an existing 감독명 cannot be bypassed
+    # by changing Unicode width/composition or extra spaces.
+    normalized = unicodedata.normalize("NFKC", clean(name))
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized.casefold()
+
+def is_admin_name(name: str) -> bool:
+    return user_key_from_name(name) == user_key_from_name(ADMIN_MANAGER_NAME)
+
+def get_admin_password() -> str:
+    # Prefer Streamlit secrets or environment variables for deployment.
+    try:
+        value = st.secrets.get("ADMIN_PASSWORD") or st.secrets.get("admin_password")
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    return os.environ.get("WKBL_ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)
 
 def ensure_data_dir():
     try:
@@ -193,22 +217,61 @@ def ensure_data_dir():
 def load_user_db():
     ensure_data_dir()
     if not USER_DB_PATH.exists():
-        return {"users": {}}
+        return {"users": {}, "settings": {}}
     try:
         data = json.loads(USER_DB_PATH.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or "users" not in data:
-            return {"users": {}}
-        if not isinstance(data["users"], dict):
+        if not isinstance(data, dict):
+            return {"users": {}, "settings": {}}
+        if "users" not in data or not isinstance(data.get("users"), dict):
             data["users"] = {}
+        if "settings" not in data or not isinstance(data.get("settings"), dict):
+            data["settings"] = {}
         return data
     except Exception:
-        return {"users": {}}
+        return {"users": {}, "settings": {}}
 
 def save_user_db(db):
     ensure_data_dir()
+    if "users" not in db or not isinstance(db.get("users"), dict):
+        db["users"] = {}
+    if "settings" not in db or not isinstance(db.get("settings"), dict):
+        db["settings"] = {}
     tmp = USER_DB_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(USER_DB_PATH)
+
+def parse_kst_datetime(value, fallback=None):
+    fallback = fallback or DEFAULT_PUBLIC_FIRST_GAME_START
+    try:
+        if isinstance(value, str) and value.strip():
+            dt = datetime.fromisoformat(value.strip())
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=KST)
+            return dt.astimezone(KST)
+    except Exception:
+        pass
+    return fallback
+
+def get_public_settings():
+    db = load_user_db()
+    settings = db.get("settings", {}) if isinstance(db.get("settings", {}), dict) else {}
+    first_start = parse_kst_datetime(settings.get("first_game_start"), DEFAULT_PUBLIC_FIRST_GAME_START)
+    try:
+        delay_hours = float(settings.get("result_delay_hours", DEFAULT_PUBLIC_RESULT_DELAY_HOURS))
+    except Exception:
+        delay_hours = DEFAULT_PUBLIC_RESULT_DELAY_HOURS
+    if delay_hours < 0:
+        delay_hours = DEFAULT_PUBLIC_RESULT_DELAY_HOURS
+    return {"first_game_start": first_start, "result_delay_hours": delay_hours}
+
+def save_public_settings(first_game_start: datetime, result_delay_hours: float):
+    db = load_user_db()
+    if first_game_start.tzinfo is None:
+        first_game_start = first_game_start.replace(tzinfo=KST)
+    db["settings"]["first_game_start"] = first_game_start.astimezone(KST).isoformat()
+    db["settings"]["result_delay_hours"] = float(result_delay_hours)
+    db["settings"]["updated_at"] = datetime.now(KST).isoformat()
+    save_user_db(db)
 
 def hash_password(password: str, salt_hex: str | None = None):
     if salt_hex is None:
@@ -285,26 +348,41 @@ def save_current_user_progress():
     save_user_db(db)
 
 def login_existing_user(manager_name: str, password: str):
+    if is_admin_name(manager_name):
+        if password != get_admin_password():
+            return False, "잘못된 패스워드입니다."
+        st.session_state.current_user_id = ADMIN_USER_ID
+        st.session_state.manager_name = ADMIN_MANAGER_NAME
+        st.session_state.is_admin = True
+        st.session_state.app_phase = "main"
+        st.session_state.page = "Admin"
+        return True, "관리자 계정으로 로그인되었습니다."
+
     user_id = user_key_from_name(manager_name)
     db = load_user_db()
     rec = db.get("users", {}).get(user_id)
     if not rec:
-        return False, "아직 등록되지 않은 감독명입니다. 같은 이름과 비밀번호로 새로 등록할 수 있습니다."
+        return False, "등록되지 않은 이름입니다."
     if not verify_password(password, rec.get("salt", ""), rec.get("password_hash", "")):
-        return False, "비밀번호가 맞지 않습니다."
+        return False, "잘못된 패스워드입니다."
     st.session_state.current_user_id = user_id
     st.session_state.manager_name = rec.get("manager_name", manager_name)
+    st.session_state.is_admin = False
     restore_progress(rec.get("progress", {}))
+    st.session_state.is_admin = False
     st.session_state.app_phase = "main"
     st.session_state.page = st.session_state.get("page") or "Home"
     return True, "로그인되었습니다."
 
 def register_new_user(players_list, games_list, manager_name: str, password: str):
+    if is_admin_name(manager_name):
+        return False, "관리자 계정은 새 감독 등록으로 만들 수 없습니다. 로그인 / 이어하기를 이용해 주세요."
     user_id = user_key_from_name(manager_name)
     db = load_user_db()
     if user_id in db.get("users", {}):
-        return False, "이미 존재하는 감독명입니다. 기존 비밀번호로 로그인해 주세요."
+        return False, "이미 등록된 감독명입니다. 새 감독 등록으로는 접속할 수 없습니다. 로그인 / 이어하기를 이용해 주세요."
     st.session_state.current_user_id = user_id
+    st.session_state.is_admin = False
     begin_game_session(players_list, games_list, manager_name)
     create_or_update_user_record(manager_name, password, snapshot_progress())
     return True, "새 감독으로 등록되었습니다."
@@ -334,11 +412,39 @@ def global_leaderboard_rows(include_current=True):
         row["Rank"] = i
     return rows
 
+
+def delete_user_by_id(user_id: str):
+    db = load_user_db()
+    if user_id in db.get("users", {}):
+        del db["users"][user_id]
+        save_user_db(db)
+        return True
+    return False
+
+def participant_admin_rows():
+    db = load_user_db()
+    rows = []
+    for uid, rec in db.get("users", {}).items():
+        progress = rec.get("progress", {}) if isinstance(rec.get("progress", {}), dict) else {}
+        manager = rec.get("manager_name") or progress.get("manager_name") or uid
+        scores = progress.get("simulation_team_scores", {}) if isinstance(progress.get("simulation_team_scores", {}), dict) else {}
+        rows.append({
+            "ID": uid,
+            "감독명": manager,
+            "누적 점수": round(float(scores.get(manager, 0.0)), 2),
+            "진행 경기": int(progress.get("simulation_game_index", 0) or 0),
+            "최근 접속/저장": rec.get("updated_at", ""),
+        })
+    rows.sort(key=lambda r: (-float(r["누적 점수"]), str(r["감독명"])))
+    return rows
+
 def public_game_start_time(game_index: int):
-    return PUBLIC_FIRST_GAME_START + PUBLIC_GAME_INTERVAL * int(game_index)
+    settings = get_public_settings()
+    return settings["first_game_start"] + PUBLIC_GAME_INTERVAL * int(game_index)
 
 def public_game_result_time(game_index: int):
-    return public_game_start_time(game_index) + PUBLIC_RESULT_DELAY
+    settings = get_public_settings()
+    return public_game_start_time(game_index) + timedelta(hours=float(settings.get("result_delay_hours", DEFAULT_PUBLIC_RESULT_DELAY_HOURS)))
 
 def now_kst():
     return datetime.now(KST)
@@ -1632,6 +1738,8 @@ def header():
 
 def nav():
     items = ["Home", "My Team", "Players", "Schedule", "Prices", "Results", "Simulation", "Help"]
+    if st.session_state.get("is_admin"):
+        items.append("Admin")
     st.markdown('<div class="nav-wrap">', unsafe_allow_html=True)
     cols = st.columns(len(items))
 
@@ -2713,10 +2821,16 @@ def update_league_table_from_scores():
         })
     st.session_state.simulation_league = league
 
-def process_one_game(game, players_list):
+def process_one_game(game, players_list, force_user_zero=False):
     if not st.session_state.simulation_ai_ready:
         initialize_ai_managers(players_list)
     sync_user_lineup_to_simulation()
+    if force_user_zero:
+        team = st.session_state.get("simulation_user_team")
+        if team:
+            st.session_state.simulation_team_rosters[team] = []
+            st.session_state.simulation_team_starting[team] = []
+            st.session_state.simulation_team_captains[team] = None
 
     lookup = player_lookup(players_list)
     row_scores = {}
@@ -2900,6 +3014,88 @@ def current_game_id():
     g = current_game()
     return g.get("game_id", "") if g else ""
 
+def current_game_status():
+    """Public timing status for the game currently targeted by the user."""
+    return public_game_status(st.session_state.get("simulation_game_index", 0))
+
+
+def is_lineup_editable_now():
+    """True only before the current game's official lock time."""
+    g = current_game()
+    if not g:
+        return False
+    return bool(current_game_status().get("can_edit", False))
+
+
+def locked_message():
+    status = current_game_status()
+    g = current_game()
+    label = game_match_label(g) if g else "현재 경기"
+    return f"{label} · {status.get('label','라인업 잠금')} · {status.get('message','')}"
+
+
+def block_locked_edit(action="라인업 수정"):
+    """Return True when an edit should be blocked because the current game is locked."""
+    if is_lineup_editable_now():
+        return False
+    st.error(f"이미 경기 시작 시간이 지나 {action}을 할 수 없습니다.")
+    st.info("잠금 시간 이후에는 저장된 라인업을 확인만 할 수 있고, 카드 선택·팩 이동·선발 교체·캡틴/All-Star 변경·저장은 모두 막힙니다.")
+    return True
+
+
+def render_readonly_locked_lineup(players_list, game=None, status=None):
+    """Show the submitted line-up in read-only mode after lock."""
+    game = game or current_game()
+    status = status or current_game_status()
+    gw = game.get("gameweek", "-") if game else "-"
+    day = game.get("day", "-") if game else "-"
+    st.markdown(f"<div class='section-title'>WK {gw} LOCKED LINE-UP</div>", unsafe_allow_html=True)
+    st.error("이미 경기 시작 시간이 지나 이 경기의 라인업은 잠겼습니다.")
+    st.info(f"{game_match_label(game) if game else '현재 경기'} · {status.get('label','')} · {status.get('message','')}")
+
+    roster_keys = list(st.session_state.get("user_roster_keys", []))
+    starting_keys = list(st.session_state.get("user_starting_keys", []))
+    bench_keys = [k for k in roster_keys if k not in starting_keys]
+    captain_key = st.session_state.get("user_captain_key")
+    allstar_active = bool(st.session_state.get("chip_allstar_active", False))
+
+    if not roster_keys or not starting_keys:
+        st.warning("이 경기 시작 전까지 유효한 라인업이 저장되지 않았습니다. 결과 공개 후 이 경기는 0점 처리됩니다.")
+    else:
+        r1, r2, r3, r4 = st.columns(4)
+        with r1:
+            summary_card("ROSTER", f"{len(roster_keys)}/10", "🃏")
+        with r2:
+            summary_card("STARTING", f"{len(starting_keys)}/5", "⭐")
+        with r3:
+            summary_card("BUDGET", format_price(total_price_for_keys(roster_keys, players_list)), "💰")
+        with r4:
+            summary_card("ALL-STAR", "ON" if allstar_active else "OFF", "✨")
+
+        st.markdown('<div class="court"><b style="color:#064EA4;">LOCKED STARTING 5</b><div class="reveal-note">이 라인업은 읽기 전용입니다. 캡틴/선발/All-Star를 더 이상 바꿀 수 없습니다.</div>', unsafe_allow_html=True)
+        cols = st.columns(5)
+        for i, (col, p) in enumerate(zip(cols, keys_to_players(starting_keys, players_list)), start=1):
+            with col:
+                player_card(p, priority=i, captain=(player_key(p) == captain_key), allstar=allstar_active)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown(f'<div class="bench"><b style="color:#E91E73;">LOCKED BENCH</b><div style="font-size:13px;color:#64748b;margin-top:4px;">벤치 선수는 실제로 해당 경기에서 뛰면 Fantasy Score의 {BENCH_SCORE_MULTIPLIER:.0%}만 반영됩니다.</div>', unsafe_allow_html=True)
+        cols = st.columns(5)
+        for i, (col, p) in enumerate(zip(cols, keys_to_players(bench_keys, players_list)), start=1):
+            with col:
+                player_card(p, priority=i, compact=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("홈으로", key="locked_home", use_container_width=True):
+            st.session_state.page = "Home"
+            st.rerun()
+    with c2:
+        if st.button("Simulation에서 결과 확인", key="locked_simulation", use_container_width=True):
+            st.session_state.page = "Simulation"
+            st.rerun()
+
 def ensure_pack_state_for_current_game():
     """Reset player packs whenever the next game changes."""
     gid = current_game_id()
@@ -2935,6 +3131,8 @@ def pack_pool(players_list, pos_label):
     ]
 
 def render_position_pack(pos_label, target_count):
+    if block_locked_edit("카드팩 수정"):
+        return
     is_back = pos_label == "Back Court"
     key_name = "pack_back_keys" if is_back else "pack_front_keys"
     open_name = "pack_back_opened" if is_back else "pack_front_opened"
@@ -2982,6 +3180,8 @@ def pack_roster_keys():
     return list(st.session_state.get("pack_back_keys", [])) + list(st.session_state.get("pack_front_keys", []))
 
 def save_pack_roster_if_valid(players_list):
+    if not is_lineup_editable_now():
+        return False, {"valid": False, "errors": ["이미 경기 시작 시간이 지나 라인업을 저장할 수 없습니다."], "players": [], "total_price": 0, "back_count": 0, "front_count": 0}
     selected_keys = pack_roster_keys()
     report = roster_report(selected_keys, players_list)
     if not report["valid"]:
@@ -3089,6 +3289,9 @@ def quest_map_html(games, current_index):
     """
 
 def render_lineup_swap_controls(roster_keys, starting_keys, players_list, key_prefix="lineup_swap"):
+    if not is_lineup_editable_now():
+        st.caption("라인업 잠금 상태라 선발/벤치 교체는 비활성화되었습니다.")
+        return
     bench_keys = [k for k in roster_keys if k not in starting_keys]
     st.markdown('<div class="swap-panel"><b>🔁 선발 ↔ 벤치 교체</b><br><span style="color:#64748b;font-size:13px;">Streamlit 기본 환경에서는 안정적인 드래그 저장이 어려워, 같은 효과를 내는 교체 버튼 방식으로 구현했습니다.</span>', unsafe_allow_html=True)
     if not bench_keys or not starting_keys:
@@ -3233,7 +3436,7 @@ def render_name_input_screen():
         with st.form("manager_login_form", clear_on_submit=False):
             name = st.text_input("감독명", value=st.session_state.manager_name, max_chars=16, placeholder="")
             password = st.text_input("패스워드", type="password", placeholder="")
-            st.caption("처음 들어온 감독명은 새 계정으로 등록됩니다. 이미 등록한 감독명은 같은 패스워드로 이어서 플레이합니다.")
+            st.caption("처음 이용하는 감독명은 '새 감독 등록'으로만 만들 수 있습니다. 이미 등록한 감독명은 '로그인 / 이어하기'로만 접속합니다.")
             c_login, c_register = st.columns(2)
             login_submitted = c_login.form_submit_button("로그인 / 이어하기", use_container_width=True)
             register_submitted = c_register.form_submit_button("새 감독 등록", use_container_width=True)
@@ -3255,17 +3458,7 @@ def render_name_input_screen():
                         st.success(msg)
                         st.rerun()
                     else:
-                        # Convenience: if the name does not exist yet, create it from the same form.
-                        db = load_user_db()
-                        if user_key_from_name(name.strip()) not in db.get("users", {}):
-                            ok2, msg2 = register_new_user(players, games_2025_26, name.strip(), password)
-                            if ok2:
-                                st.success("새 감독으로 등록하고 게임을 시작합니다.")
-                                st.rerun()
-                            else:
-                                st.error(msg2)
-                        else:
-                            st.error(msg)
+                        st.error(msg)
 
 
 if st.session_state.app_phase == "splash":
@@ -3285,6 +3478,88 @@ players_with_data = [p for p in players if p["previous_data"]]
 players_no_data = [p for p in players if not p["previous_data"]]
 max_score = max([p["fantasy_score"] for p in players_with_data] or [0])
 highest_player = max(players_with_data, key=lambda p: p["fantasy_score"], default=None)
+
+
+def render_admin_page():
+    if not st.session_state.get("is_admin"):
+        st.error("관리자만 접근할 수 있습니다.")
+        return
+
+    st.markdown('<div class="section-title">ADMIN CONTROL CENTER</div>', unsafe_allow_html=True)
+    settings = get_public_settings()
+    current_start = settings["first_game_start"]
+    current_delay = float(settings.get("result_delay_hours", DEFAULT_PUBLIC_RESULT_DELAY_HOURS))
+
+    st.markdown("""
+    <div class="panel">
+        <div class="panel-title">공개 리그 시간 관리</div>
+        <div style="line-height:1.7;color:#475569;">
+            참가자 전체가 같은 경기 시간표를 사용합니다. 여기서 첫 경기 시작 시간을 바꾸면 모든 참가자의 라인업 마감/결과 공개 시간이 함께 바뀝니다.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.form("admin_schedule_form"):
+        c1, c2, c3 = st.columns([1.1, 1, 1])
+        with c1:
+            new_date = st.date_input("첫 경기 날짜", value=current_start.date())
+        with c2:
+            new_time = st.time_input("첫 경기 시작 시각 KST", value=current_start.time().replace(microsecond=0))
+        with c3:
+            new_delay = st.number_input("결과 공개 지연 시간", min_value=0.0, max_value=24.0, value=current_delay, step=0.5)
+        submitted = st.form_submit_button("전체 리그 시간표 저장", use_container_width=True)
+        if submitted:
+            new_dt = datetime.combine(new_date, new_time).replace(tzinfo=KST)
+            save_public_settings(new_dt, float(new_delay))
+            st.success(f"첫 경기 시작 시간이 {format_kst(new_dt)}로 저장되었습니다. 결과 공개는 경기 시작 후 {new_delay:g}시간 뒤입니다.")
+            st.rerun()
+
+    updated = get_public_settings()
+    st.info(f"현재 설정: 첫 경기 {format_kst(updated['first_game_start'])} · 결과 공개 지연 {updated['result_delay_hours']:g}시간")
+
+    st.markdown("### 참가자 관리")
+    rows = participant_admin_rows()
+    if not rows:
+        st.info("아직 등록된 참가자가 없습니다.")
+    else:
+        display_rows = [{k: v for k, v in row.items() if k != "ID"} for row in rows]
+        st.markdown(table_html(display_rows, ["감독명", "누적 점수", "진행 경기", "최근 접속/저장"]), unsafe_allow_html=True)
+
+        with st.expander("참가자 삭제"):
+            manager_options = [row["감독명"] for row in rows]
+            selected_manager = st.selectbox("삭제할 참가자", manager_options, key="admin_delete_manager_select")
+            confirm_text = st.text_input("삭제하려면 감독명을 그대로 입력하세요", key="admin_delete_confirm")
+            if st.button("참가자 삭제", use_container_width=True, type="primary"):
+                target = next((row for row in rows if row["감독명"] == selected_manager), None)
+                if not target:
+                    st.error("선택한 참가자를 찾을 수 없습니다.")
+                elif confirm_text.strip() != selected_manager:
+                    st.error("확인용 감독명이 일치하지 않습니다.")
+                else:
+                    delete_user_by_id(target["ID"])
+                    st.success(f"{selected_manager} 참가자를 삭제했습니다.")
+                    st.rerun()
+
+        with st.expander("전체 참가자 데이터 초기화", expanded=False):
+            st.warning("이 작업은 모든 참가자 계정과 진행 상황을 삭제합니다. 테스트 중일 때만 사용하세요.")
+            reset_confirm = st.text_input("전체 초기화를 원하면 RESET 입력", key="admin_reset_all_confirm")
+            if st.button("모든 참가자 삭제", use_container_width=True):
+                if reset_confirm.strip() == "RESET":
+                    db = load_user_db()
+                    db["users"] = {}
+                    save_user_db(db)
+                    st.success("모든 참가자 데이터가 삭제되었습니다.")
+                    st.rerun()
+                else:
+                    st.error("RESET을 정확히 입력해야 합니다.")
+
+    if st.button("관리자 로그아웃", use_container_width=True):
+        st.session_state.current_user_id = ""
+        st.session_state.manager_name = ""
+        st.session_state.is_admin = False
+        st.session_state.app_phase = "name_input"
+        st.session_state.page = "Home"
+        st.rerun()
 
 # =========================
 # Pages
@@ -3306,6 +3581,11 @@ elif page == "My Team":
         day = next_game_obj.get("day")
         allowed_teams = current_allowed_teams()
         match_label = game_match_label(next_game_obj)
+        time_status = public_game_status(current_idx)
+
+        if not time_status["can_edit"]:
+            render_readonly_locked_lineup(players, next_game_obj, time_status)
+            st.stop()
 
         top_left, top_right = st.columns([3, 1.3])
         with top_left:
@@ -3739,15 +4019,23 @@ elif page == "Simulation":
                     st.caption("경기 시작 후에는 라인업이 잠깁니다.")
             with col_b:
                 readiness = gameday_lineup_report(g, players)
-                can_reveal = readiness["valid"] and status["can_reveal"]
+                can_reveal = status["can_reveal"]
                 if st.button("결과 확인", use_container_width=True, disabled=not can_reveal):
-                    process_one_game(games_2025_26[st.session_state.simulation_game_index], players)
+                    if not readiness["valid"]:
+                        # Public league rule: missed or invalid line-up is allowed to reveal, but scores 0 for that game.
+                        team = st.session_state.get("simulation_user_team")
+                        if team:
+                            st.session_state.simulation_team_rosters[team] = []
+                            st.session_state.simulation_team_starting[team] = []
+                            st.session_state.simulation_team_captains[team] = None
+                        st.session_state.chip_allstar_active = False
+                    process_one_game(games_2025_26[st.session_state.simulation_game_index], players, force_user_zero=not readiness["valid"])
                     save_current_user_progress()
                     st.rerun()
                 if not readiness["valid"]:
-                    st.error("라인업 조건이 맞지 않아 결과를 확인할 수 없습니다.")
+                    st.warning("라인업을 제출하지 않았거나 조건이 맞지 않습니다. 결과 공개 후 이 경기는 0점 처리됩니다.")
                     for msg in readiness["errors"]:
-                        st.warning(msg)
+                        st.caption(msg)
                 elif not status["can_reveal"]:
                     st.info(status["message"])
 
@@ -3845,6 +4133,9 @@ elif page == "Results":
                 st.markdown(table_html(item.get("price_changes", []), ["Player", "Team", "Game Score", "Old Price", "Change", "New Price"]), unsafe_allow_html=True)
 
 
+elif page == "Admin":
+    render_admin_page()
+
 elif page == "Help":
     st.markdown('<div class="section-title">HOW TO PLAY</div>', unsafe_allow_html=True)
     st.markdown("""
@@ -3856,9 +4147,9 @@ elif page == "Help":
     - Salary cap: 14억원
     - Gameday player pool: only the two WKBL teams playing the next real game
     - Transfers: unlimited every Gameday
-    - Deadline: 30 minutes before the first game of the Gameday, KST
+    - Deadline: 각 경기 시작 시각 정각, KST. 경기 시작 후에는 해당 경기 라인업이 잠깁니다.
     - Game results are read from `game_results_2025_26.csv`
-    - 공개 리그에서는 첫 경기 시작 시간을 기준으로 모든 감독이 같은 시간표를 따릅니다. 예시 설정: 2026-05-27 06:30 KST 첫 경기 시작, 경기 시작 3시간 후 결과 공개.
+    - 공개 리그에서는 관리자 페이지의 첫 경기 시작 시간을 기준으로 모든 감독이 같은 시간표를 따릅니다. 결과는 관리자가 설정한 지연 시간 이후 공개됩니다.
 
     ### Fantasy Score Formula
     Good Defense is excluded.
@@ -3901,7 +4192,7 @@ elif page == "Help":
     """)
 
 # Save progress once per rerun for logged-in managers.
-if st.session_state.get("app_phase") == "main" and st.session_state.get("current_user_id"):
+if st.session_state.get("app_phase") == "main" and st.session_state.get("current_user_id") and not st.session_state.get("is_admin"):
     save_current_user_progress()
 
 # =========================
