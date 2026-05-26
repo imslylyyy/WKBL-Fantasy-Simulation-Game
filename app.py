@@ -11,7 +11,7 @@ from pathlib import Path
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide")
 
-APP_VERSION = "one-game-only-v9 / All-Star once per gameweek"
+APP_VERSION = "one-game-only-v10 / roster save Streamlit state fix"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -2201,7 +2201,6 @@ elif page == "My Team":
                 })
 
             st.session_state.user_roster_keys = list(selected_keys)
-            st.session_state.roster_select = list(selected_keys)
             st.session_state.user_starting_keys = auto_starting_keys(st.session_state.user_roster_keys, players, st.session_state.user_formation)
             if st.session_state.user_captain_key not in st.session_state.user_starting_keys:
                 st.session_state.user_captain_key = st.session_state.user_starting_keys[0] if st.session_state.user_starting_keys else None
@@ -2261,7 +2260,6 @@ elif page == "My Team":
         if st.button("Save Starting 5", use_container_width=True, disabled=not start_report["valid"]):
             if report["valid"]:
                 st.session_state.user_roster_keys = list(working_roster_keys)
-                st.session_state.roster_select = list(working_roster_keys)
             st.session_state.user_starting_keys = proposed_starting
             if st.session_state.user_captain_key not in proposed_starting:
                 st.session_state.user_captain_key = proposed_starting[0] if proposed_starting else None
