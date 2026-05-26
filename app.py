@@ -20,7 +20,7 @@ import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v28.0 / WKBL logo refresh"
+APP_VERSION = "Final Version v29.0 / logo layout fix"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -1527,7 +1527,10 @@ button[kind="secondary"] {
 .v21-brand img { width:105px; max-height:72px; object-fit:contain; filter:drop-shadow(0 8px 18px rgba(0,0,0,.35)); }
 .v21-manager { display:flex; gap:10px; align-items:center; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.20); border-radius:18px; padding:10px 14px; font-weight:900; }
 .v21-title { display:flex; flex-direction:column; align-items:flex-start; gap:10px; line-height:.90; text-shadow:0 10px 34px rgba(0,0,0,.48); }
-.v21-title-logo { width:min(380px, 60vw); max-width:100%; height:auto; object-fit:contain; filter:drop-shadow(0 10px 28px rgba(0,0,0,.45)); }
+.v21-title-logo { width:min(230px, 36vw); max-width:100%; height:auto; object-fit:contain; filter:drop-shadow(0 10px 28px rgba(0,0,0,.45)); }
+.v21-title-row { display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap; }
+.v21-title-row .pink { line-height:.9; }
+.v21-topbar { justify-content:flex-end; }
 .v21-title .pink { color:#ff4fa3; display:block; font-family:'Oswald',sans-serif; font-size:82px; font-weight:900; letter-spacing:-2px; }
 .v21-sub { margin-top:16px; font-size:18px; line-height:1.35; color:rgba(255,255,255,.88); font-weight:700; max-width:440px; }
 .v21-cta-row { display:flex; flex-wrap:wrap; gap:12px; margin-top:22px; }
@@ -1903,7 +1906,6 @@ def render_dashboard_home(players_list, games_list):
         standing_lines = "<p>아직 순위가 없습니다.</p>"
     home_logo_html = f'<img src="{home_logo}" alt="{home}">' if home_logo else ''
     away_logo_html = f'<img src="{away_logo}" alt="{away}">' if away_logo else ''
-    wkbl_logo_html = f'<img src="{wkbl}" alt="WKBL">' if wkbl else '<div style="font-size:34px;font-weight:900;">WKBL</div>'
     wkbl_title_logo_html = f'<img class="v21-title-logo" src="{wkbl}" alt="WKBL">' if wkbl else '<div style="font-size:72px;font-weight:900;color:white;">WKBL</div>'
 
     music_left, music_right = st.columns([4.4, 1.2])
@@ -1913,13 +1915,12 @@ def render_dashboard_home(players_list, games_list):
     st.markdown(f"""
     <div class="v21-home" style="{bg_style}">
       <div class="v21-topbar">
-        <div class="v21-brand">{wkbl_logo_html}</div>
         <div style="display:flex;gap:12px;align-items:center;">
           <div class="v21-manager">⭐ 실시간 포인트&nbsp; {my_points:.2f}</div>
           <div class="v21-manager">👤 {manager} 감독님, 환영합니다</div>
         </div>
       </div>
-      <div class="v21-title">{wkbl_title_logo_html}<span class="pink">Fantasy</span></div>
+      <div class="v21-title v21-title-row">{wkbl_title_logo_html}<span class="pink">Fantasy</span></div>
       <div class="v21-sub">Build. Compete. Win.<br>카드를 뽑고, 라인업을 만들고, 매 경기 판타지 포인트로 순위를 올리세요.</div>
     </div>
     """, unsafe_allow_html=True)
@@ -3487,11 +3488,11 @@ def render_splash_screen():
         font-weight:800; letter-spacing:.5px; font-size:16px; text-shadow:0 3px 10px rgba(0,0,0,.35);
     }}
     .splash-title {{
-        position:absolute; left:58px; top:92px; transform:none;
+        position:absolute; left:58px; top:88px; transform:none;
         color:white; font-weight:900; text-shadow:0 6px 30px rgba(0,0,0,.60); text-align:left; line-height:.92;
-        display:flex; flex-direction:column; align-items:flex-start; gap:10px;
+        display:flex; flex-direction:row; align-items:flex-end; gap:14px; flex-wrap:wrap;
     }}
-    .splash-title-logo {{ width:min(380px, 58vw); max-width:100%; height:auto; object-fit:contain; filter:drop-shadow(0 10px 28px rgba(0,0,0,.45)); }}
+    .splash-title-logo {{ width:min(220px, 34vw); max-width:100%; height:auto; object-fit:contain; filter:drop-shadow(0 10px 28px rgba(0,0,0,.45)); }}
     .splash-title span {{ color:#E91E73; font-family:'Oswald', sans-serif; font-size:72px; font-weight:900; letter-spacing:-1px; }}
     .start-guide {{
         position:absolute; left:50%; bottom:120px; transform:translateX(-50%);
