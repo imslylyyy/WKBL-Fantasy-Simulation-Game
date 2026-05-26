@@ -2381,12 +2381,25 @@ game_csv_loaded = len(games_2025_26) > 0
 # v15 Quest Map / Player Pack Helpers
 # =========================
 VENUE_COORDS = {
-    "부산사직실내체육관": (69, 76),
-    "부천체육관": (39, 36),
-    "용인실내체육관": (47, 41),
-    "인천도원체육관": (35, 35),
-    "아산이순신체육관": (43, 49),
-    "청주체육관": (49, 47),
+    # Label-card positions on the large Korea map.  These are deliberately
+    # spread out so quest boxes do not overlap, while still staying close to
+    # each home city's real region.
+    "인천도원체육관": (21, 28),
+    "부천체육관": (26, 43),
+    "용인실내체육관": (44, 31),
+    "아산이순신체육관": (34, 58),
+    "청주체육관": (55, 47),
+    "부산사직실내체육관": (79, 78),
+}
+
+VENUE_DOT_COORDS = {
+    # Smaller actual-location dots, with quest cards allowed to sit nearby.
+    "인천도원체육관": (35, 33),
+    "부천체육관": (38, 36),
+    "용인실내체육관": (43, 40),
+    "아산이순신체육관": (41, 52),
+    "청주체육관": (50, 47),
+    "부산사직실내체육관": (69, 77),
 }
 
 def venue_coord(venue):
@@ -2396,6 +2409,13 @@ def venue_coord(venue):
             return coord
     # Safe fallback: place unknown venue near the center of the stylized map.
     return (50, 50)
+
+def venue_dot_coord(venue):
+    venue = clean(venue)
+    for key, coord in VENUE_DOT_COORDS.items():
+        if key in venue:
+            return coord
+    return venue_coord(venue)
 
 def current_game_id():
     g = current_game()
@@ -2512,16 +2532,30 @@ def quest_map_html(games, current_index):
     week_games = [g for g in games if g.get("gameweek") == current_gw]
     bg = asset_data_url(SPLASH_BG_PATH) or asset_data_url(HERO_IMAGE_PATH)
     bg_style = f"background-image:url('{bg}');" if bg else ""
+
     nodes = []
+    lines = []
+    dots = []
+    used_positions = {}
     for g in week_games:
         gi = games.index(g)
         status = "done" if gi < current_index else ("current" if gi == current_index else "locked")
         status_label = "CLEAR" if status == "done" else ("NEXT" if status == "current" else "LOCKED")
         x, y = venue_coord(g.get("venue", ""))
+        # If two games share a home venue in one GW, offset the card gently.
+        count = used_positions.get((round(x), round(y)), 0)
+        used_positions[(round(x), round(y))] = count + 1
+        if count:
+            x = min(90, x + 8 * count)
+            y = min(88, y + 8 * count)
+        dx, dy = venue_dot_coord(g.get("venue", ""))
         logo = team_logo_data_url(g.get("home_team", ""))
         logo_html = f'<img src="{logo}" alt="{g.get("home_team","")}">' if logo else ""
         match = game_match_label(g, show_score=(status == "done"))
         lock = "🔒" if status == "locked" else ""
+        dot_class = f"map-dot {status}"
+        dots.append(f'<div class="{dot_class}" style="left:{dx}%;top:{dy}%;"></div>')
+        lines.append(f'<svg class="leader-line"><line x1="{dx}%" y1="{dy}%" x2="{x}%" y2="{y}%" /></svg>')
         node_inner = f"""
             {logo_html}
             <div class="quest-status">{status_label} {lock}</div>
@@ -2532,37 +2566,48 @@ def quest_map_html(games, current_index):
             nodes.append(f'<a class="quest-link" href="{href}" target="_top"><div class="quest-node {status}" style="left:{x}%;top:{y}%;">{node_inner}</div></a>')
         else:
             nodes.append(f'<div class="quest-node {status}" style="left:{x}%;top:{y}%;">{node_inner}</div>')
+
     return f"""
     <!DOCTYPE html>
     <html><head><meta charset="utf-8"><style>
     body {{ margin:0; background:transparent; font-family: Arial, sans-serif; }}
-    .quest-wrap {{ position:relative; min-height:560px; border-radius:30px; overflow:hidden; border:1px solid rgba(255,255,255,.22); box-shadow:0 22px 60px rgba(15,23,42,.28); background-size:cover; background-position:center; {bg_style} }}
-    .quest-wrap:before {{ content:""; position:absolute; inset:0; background:linear-gradient(135deg, rgba(2,6,23,.82), rgba(6,78,164,.48), rgba(233,30,115,.34)); }}
-    .quest-title {{ position:absolute; left:28px; top:24px; z-index:2; color:white; font-size:42px; font-weight:900; text-shadow:0 6px 24px rgba(0,0,0,.45); }}
-    .korea-map {{ position:absolute; inset:90px 30px 28px 30px; z-index:2; border-radius:26px; border:1px solid rgba(255,255,255,.18); background:rgba(2,6,23,.36); backdrop-filter:blur(3px); overflow:hidden; }}
-    .korea-map svg {{ position:absolute; inset:0; width:100%; height:100%; }}
-    .map-shape {{ fill:rgba(255,255,255,.08); stroke:rgba(255,255,255,.20); stroke-width:2; }}
-    .map-dot {{ fill:rgba(255,255,255,.18); }}
+    .quest-wrap {{ position:relative; min-height:720px; border-radius:34px; overflow:hidden; border:1px solid rgba(255,255,255,.22); box-shadow:0 22px 60px rgba(15,23,42,.28); background-size:cover; background-position:center; {bg_style} }}
+    .quest-wrap:before {{ content:""; position:absolute; inset:0; background:linear-gradient(135deg, rgba(2,6,23,.84), rgba(6,78,164,.48), rgba(233,30,115,.30)); }}
+    .quest-title {{ position:absolute; left:32px; top:26px; z-index:4; color:white; font-size:46px; font-weight:900; text-shadow:0 6px 24px rgba(0,0,0,.45); }}
+    .korea-map {{ position:absolute; inset:92px 22px 24px 22px; z-index:2; border-radius:28px; border:1px solid rgba(255,255,255,.18); background:rgba(2,6,23,.34); backdrop-filter:blur(3px); overflow:hidden; }}
+    .korea-map svg.base-map {{ position:absolute; inset:0; width:100%; height:100%; z-index:1; }}
+    .map-shape {{ fill:rgba(255,255,255,.11); stroke:rgba(255,255,255,.30); stroke-width:4; filter:drop-shadow(0 16px 28px rgba(0,0,0,.28)); }}
+    .map-island {{ fill:rgba(255,255,255,.08); stroke:rgba(255,255,255,.20); stroke-width:2; }}
+    .leader-line {{ position:absolute; inset:0; width:100%; height:100%; z-index:2; pointer-events:none; }}
+    .leader-line line {{ stroke:rgba(250,204,21,.42); stroke-width:2; stroke-dasharray:7 7; }}
+    .map-dot {{ position:absolute; width:12px; height:12px; border-radius:999px; transform:translate(-50%,-50%); z-index:3; background:#f8fafc; border:2px solid #facc15; box-shadow:0 0 18px rgba(250,204,21,.75); }}
+    .map-dot.locked {{ opacity:.45; filter:grayscale(1); }}
     .quest-link {{ text-decoration:none; color:inherit; }}
-    .quest-node {{ position:absolute; width:126px; min-height:112px; transform:translate(-50%,-50%); border-radius:20px; padding:10px; text-align:center; color:white; background:rgba(15,23,42,.82); border:2px solid rgba(255,255,255,.22); box-shadow:0 10px 26px rgba(0,0,0,.30); cursor:pointer; transition:.18s ease; }}
+    .quest-node {{ position:absolute; width:148px; min-height:118px; transform:translate(-50%,-50%); border-radius:22px; padding:12px; text-align:center; color:white; background:rgba(15,23,42,.86); border:2px solid rgba(255,255,255,.24); box-shadow:0 10px 26px rgba(0,0,0,.30); cursor:pointer; transition:.18s ease; z-index:4; }}
     .quest-node:hover {{ transform:translate(-50%,-54%) scale(1.04); filter:brightness(1.14); }}
-    .quest-node.current {{ border-color:#facc15; box-shadow:0 0 0 4px rgba(250,204,21,.22), 0 0 32px rgba(250,204,21,.60); }}
+    .quest-node.current {{ border-color:#facc15; box-shadow:0 0 0 4px rgba(250,204,21,.22), 0 0 34px rgba(250,204,21,.64), 0 10px 26px rgba(0,0,0,.30); }}
     .quest-node.done {{ opacity:.70; filter:saturate(.7); }}
-    .quest-node.locked {{ opacity:.38; filter:grayscale(1); }}
-    .quest-node img {{ width:50px; height:50px; object-fit:contain; display:block; margin:0 auto 5px; }}
-    .quest-status {{ font-size:11px; font-weight:900; color:#facc15; }}
-    .quest-match {{ font-size:11px; font-weight:800; line-height:1.25; margin-top:4px; }}
+    .quest-node.locked {{ opacity:.45; filter:grayscale(1); }}
+    .quest-node img {{ width:54px; height:54px; object-fit:contain; display:block; margin:0 auto 6px; }}
+    .quest-status {{ font-size:12px; font-weight:900; color:#facc15; }}
+    .quest-match {{ font-size:12px; font-weight:800; line-height:1.25; margin-top:4px; }}
     </style></head><body>
     <div class="quest-wrap">
       <div class="quest-title">GW {current_gw} QUEST MAP</div>
       <div class="korea-map">
-        <svg viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet"><path class="map-shape" d="M610 70l55 38 17 53 34 26 11 54-21 49 15 42-17 55-34 31-13 39-37 34-19 57-42 13-35-18-29 11-39-26-46 8-48-41-22-44 7-44-29-29-10-54 26-53 1-49 32-31 28-47 49-14 28-42 48-12 50 14z"/><circle class="map-dot" cx="660" cy="165" r="6"/><circle class="map-dot" cx="634" cy="220" r="6"/><circle class="map-dot" cx="592" cy="260" r="6"/><circle class="map-dot" cx="616" cy="326" r="6"/><circle class="map-dot" cx="535" cy="346" r="6"/><circle class="map-dot" cx="576" cy="398" r="6"/></svg>
+        <svg class="base-map" viewBox="0 0 1000 720" preserveAspectRatio="xMidYMid meet">
+          <path class="map-shape" d="M558 42 C627 70 672 118 682 176 C724 208 735 256 712 302 C741 348 725 401 681 431 C670 482 635 528 592 548 C582 604 536 652 477 662 C427 671 388 644 369 601 C321 580 291 537 297 489 C250 455 238 398 267 350 C247 299 260 242 304 209 C315 151 360 105 415 91 C451 45 508 22 558 42 Z"/>
+          <path class="map-island" d="M324 626 C344 612 375 610 392 627 C376 650 344 654 324 626 Z"/>
+          <path class="map-island" d="M705 566 C725 553 746 559 755 577 C737 588 719 586 705 566 Z"/>
+        </svg>
+        {''.join(lines)}
+        {''.join(dots)}
         {''.join(nodes)}
       </div>
     </div></body></html>
     """
 
-def render_lineup_swap_controls(roster_keys, starting_keys, players_list):
+def render_lineup_swap_controls(roster_keys, starting_keys, players_list, key_prefix="lineup_swap"):
     bench_keys = [k for k in roster_keys if k not in starting_keys]
     st.markdown('<div class="swap-panel"><b>🔁 선발 ↔ 벤치 교체</b><br><span style="color:#64748b;font-size:13px;">Streamlit 기본 환경에서는 안정적인 드래그 저장이 어려워, 같은 효과를 내는 교체 버튼 방식으로 구현했습니다.</span>', unsafe_allow_html=True)
     if not bench_keys or not starting_keys:
@@ -2572,13 +2617,13 @@ def render_lineup_swap_controls(roster_keys, starting_keys, players_list):
 
     c1, c2, c3 = st.columns([1.2, 1.2, .8])
     with c1:
-        bench_pick = st.selectbox("벤치에서 올릴 선수", bench_keys, format_func=lambda k: label_for_key(k, players_list), key="swap_bench_pick")
+        bench_pick = st.selectbox("벤치에서 올릴 선수", bench_keys, format_func=lambda k: label_for_key(k, players_list), key=f"{key_prefix}_bench_pick")
     with c2:
-        starter_pick = st.selectbox("벤치로 내릴 선발", starting_keys, format_func=lambda k: label_for_key(k, players_list), key="swap_starter_pick")
+        starter_pick = st.selectbox("벤치로 내릴 선발", starting_keys, format_func=lambda k: label_for_key(k, players_list), key=f"{key_prefix}_starter_pick")
     with c3:
         st.write("")
         st.write("")
-        if st.button("교체", use_container_width=True):
+        if st.button("교체", key=f"{key_prefix}_button", use_container_width=True):
             proposed = [bench_pick if k == starter_pick else k for k in starting_keys]
             status = validate_starting(proposed, roster_keys, players_list, st.session_state.user_formation)
             if status["valid"]:
@@ -2763,7 +2808,7 @@ elif page == "My Team":
             st.info(f"현재 경기\n\nGW {gw} · Day {day}\n\n{match_label}")
 
         if stage == "map":
-            components.html(quest_map_html(games_2025_26, current_idx), height=620, scrolling=False)
+            components.html(quest_map_html(games_2025_26, current_idx), height=780, scrolling=False)
             st.caption("현재 퀘스트 네모칸을 클릭하거나 아래 버튼을 누르면 선수팩 화면으로 이동합니다. 메뉴는 좌측 상단의 ☰ 버튼으로 이동합니다.")
             c1, c2 = st.columns([2, 1])
             with c1:
@@ -2922,7 +2967,6 @@ elif page == "My Team":
                         player_card(p, priority=i, captain=(player_key(p) == st.session_state.user_captain_key), allstar=allstar_glow)
                 st.markdown('</div>', unsafe_allow_html=True)
 
-                render_lineup_swap_controls(roster_keys, list(display_starting_keys), players)
                 bench_keys = [k for k in roster_keys if k not in display_starting_keys]
                 bench_players_sorted = sorted(keys_to_players(bench_keys, players), key=lambda p: float(p.get("current_price", p.get("initial_price", MIN_PRICE))))
                 st.markdown(f'<div class="bench"><b style="color:#E91E73;">BENCH</b><div style="font-size:13px;color:#64748b;margin-top:4px;">벤치 선수는 실제로 해당 경기에서 뛰면 Fantasy Score의 {BENCH_SCORE_MULTIPLIER:.0%}만 반영됩니다.</div>', unsafe_allow_html=True)
@@ -3073,7 +3117,7 @@ elif page == "Simulation":
 
         if game_csv_loaded and not finished:
             g = games_2025_26[current_idx]
-            components.html(quest_map_html(games_2025_26, current_idx), height=620, scrolling=False)
+            components.html(quest_map_html(games_2025_26, current_idx), height=780, scrolling=False)
 
             st.markdown("### Current Quest")
             st.caption("예정 경기이므로 여기서는 최종 점수를 보여주지 않습니다. 완료된 경기 결과는 Results 탭에서 확인하세요.")
