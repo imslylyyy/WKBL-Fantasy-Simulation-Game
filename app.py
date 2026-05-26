@@ -7,11 +7,12 @@ import mimetypes
 import math
 import re
 import random
+import string
 from pathlib import Path
 
-st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide")
+st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "one-game-only-v10 / roster save Streamlit state fix"
+APP_VERSION = "Final Version v14.1 / splash background + High Five BGM"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -51,6 +52,12 @@ CSV_PATH = Path("players_2024_25.csv")
 IMAGE_DIR = Path("images")
 GAME_RESULTS_PATH = Path("game_results_2025_26.csv")
 RAW_GAME_RESULTS_PATH = Path("raw_game_results_2025_26.txt")
+ASSET_DIR = Path("assets")
+TEAM_LOGO_DIR = ASSET_DIR / "team_logos"
+HERO_IMAGE_PATH = ASSET_DIR / "hero.jpg"
+WKBL_LOGO_PATH = ASSET_DIR / "wkbl_logo.png"
+SPLASH_BG_PATH = ASSET_DIR / "splash_bg.jpg"
+BGM_AUDIO_PATH = ASSET_DIR / "audio" / "bgm.mp3"
 
 ROSTER_SIZE = 10
 ROSTER_BACK_COUNT = 5
@@ -59,6 +66,8 @@ STARTERS_COUNT = 5
 MAX_PLAYERS_PER_WKBL_TEAM = ROSTER_SIZE  # current-gameday roster uses only the two playing teams
 FREE_TRANSFERS_PER_GAMEWEEK = 999  # transfers are unlimited by rule
 TRANSFER_PENALTY_POINTS = 0
+STARTING_SCORE_MULTIPLIER = 1.00
+BENCH_SCORE_MULTIPLIER = 0.50
 
 COLUMNS = [
     "name", "team_2025_26", "position", "games", "minutes",
@@ -69,6 +78,19 @@ COLUMNS = [
 # =========================
 # Page State
 # =========================
+# App phase: splash -> name_input -> main
+if "app_phase" not in st.session_state:
+    st.session_state.app_phase = "splash"
+
+if "manager_name" not in st.session_state:
+    st.session_state.manager_name = ""
+
+if "fantasy_team_names" not in st.session_state:
+    st.session_state.fantasy_team_names = []
+
+if "bgm_enabled" not in st.session_state:
+    st.session_state.bgm_enabled = False
+
 if "page" not in st.session_state:
     st.session_state.page = "Home"
 
@@ -101,19 +123,95 @@ def format_price(value):
 
 def start_simulation(user_team):
     league = []
-    for team in SIMULATION_TEAMS:
+    for team in get_fantasy_teams():
         league.append({
             "Rank": 1,
             "Team": team,
-            "Manager": "You" if team == user_team else "AI",
+            "Manager": "나" if team == user_team else "AI",
             "Points": 0.0,
-            "Transfers": 0,
+            "Transfers": "∞",
             "Budget": format_price(BUDGET_CAP),
         })
     st.session_state.simulation_user_team = user_team
     st.session_state.simulation_game_no = 1
     st.session_state.simulation_started = True
     st.session_state.simulation_league = league
+
+
+def generate_ai_team_names(n=5):
+    """Generate stable-looking random AI fantasy team names using letters, numbers, and symbols."""
+    prefixes = ["NOVA", "RUSH", "BYTE", "VOLT", "LUNA", "R3X", "KAI", "ZETA", "FLUX", "MINT"]
+    symbols = ["_", "#", "!", "*", "-", "$", "@"]
+    names = set()
+    while len(names) < n:
+        name = f"{random.choice(prefixes)}{random.choice(symbols)}{random.randint(10, 99)}"
+        names.add(name)
+    return list(names)
+
+def get_fantasy_teams():
+    teams = list(st.session_state.get("fantasy_team_names", []))
+    if teams:
+        return teams
+    # Safe fallback before the user starts the game.
+    return ["나의 팀"] + generate_ai_team_names(5)
+
+def user_fantasy_team_name():
+    return st.session_state.get("manager_name", "나의 팀") or "나의 팀"
+
+def audio_data_url(path):
+    path = Path(path)
+    if not path.exists():
+        return None
+    data = base64.b64encode(path.read_bytes()).decode("utf-8")
+    mime = mimetypes.guess_type(str(path))[0] or "audio/mpeg"
+    return f"data:{mime};base64,{data}"
+
+def render_bgm_player():
+    """Play one looping BGM after the START button has been clicked, if assets/audio/bgm.mp3 exists."""
+    if not st.session_state.get("bgm_enabled"):
+        return
+    src = audio_data_url(BGM_AUDIO_PATH)
+    if not src:
+        return
+    components.html(f"""
+    <audio id="wkbl-bgm" autoplay loop playsinline>
+        <source src="{src}" type="audio/mpeg">
+    </audio>
+    <script>
+    const audio = document.getElementById('wkbl-bgm');
+    if (audio) {{
+        audio.volume = 0.42;
+        audio.loop = true;
+        const p = audio.play();
+        if (p !== undefined) {{ p.catch(() => {{}}); }}
+    }}
+    </script>
+    """, height=0)
+
+def begin_game_session(players_list, games_list, manager_name):
+    """Create the user's fantasy league and enter the main game."""
+    st.session_state.manager_name = manager_name.strip()
+    st.session_state.fantasy_team_names = [st.session_state.manager_name] + generate_ai_team_names(5)
+    st.session_state.page = "Home"
+
+    # First gameday roster is generated only from the first game's two real WKBL teams.
+    if games_list:
+        start_allowed = game_allowed_teams(games_list[0])
+        start_pool = [p for p in players_list if not start_allowed or p.get("team_2025_26") in start_allowed]
+    else:
+        start_pool = players_list
+
+    st.session_state.user_roster_keys = generate_auto_roster(start_pool, seed=random.randint(100, 9999))
+    st.session_state.roster_working_keys = list(st.session_state.user_roster_keys)
+    st.session_state.user_starting_keys = auto_starting_keys(st.session_state.user_roster_keys, players_list, st.session_state.user_formation)
+    st.session_state.user_captain_key = st.session_state.user_starting_keys[0] if st.session_state.user_starting_keys else None
+
+    reset_simulation_runtime(players_list)
+    start_simulation(st.session_state.manager_name)
+    initialize_ai_managers(players_list)
+    update_league_table_from_scores()
+    st.session_state.simulation_started = True
+    st.session_state.app_phase = "main"
 
 # =========================
 # Parsing / Calculation
@@ -571,6 +669,44 @@ def image_data_url(path):
     data = base64.b64encode(path.read_bytes()).decode("utf-8")
     return f"data:{mime};base64,{data}"
 
+
+def asset_data_url(path):
+    path = Path(path)
+    if not path.exists():
+        return None
+    return image_data_url(path)
+
+TEAM_LOGO_FILES = {
+    "하나은행": "하나은행.jpeg",
+    "우리은행": "우리은행.PNG",
+    "신한은행": "신한은행.PNG",
+    "삼성생명": "삼성생명.JPG",
+    "BNK썸": "BNK썸.PNG",
+    "KB스타즈": "KB스타즈.JPG",
+}
+
+def team_logo_data_url(team):
+    filename = TEAM_LOGO_FILES.get(canonical_team(team), "")
+    if not filename:
+        return None
+    return asset_data_url(TEAM_LOGO_DIR / filename)
+
+def team_logo_img_html(team, size=44):
+    data = team_logo_data_url(team)
+    if not data:
+        return f'<span class="team-logo-fallback">{team}</span>'
+    return f'<img src="{data}" alt="{team}" style="width:{size}px;height:{size}px;object-fit:contain;">'
+
+def team_logo_strip_html():
+    items = []
+    for team in SIMULATION_TEAMS:
+        logo = team_logo_data_url(team)
+        if logo:
+            items.append(f'<div class="club-logo"><img src="{logo}" alt="{team}"><span>{team}</span></div>')
+        else:
+            items.append(f'<div class="club-logo"><span>{team}</span></div>')
+    return ''.join(items)
+
 # =========================
 # Main CSS
 # =========================
@@ -586,7 +722,17 @@ html, body, [class*="css"] {
     padding-top: 1rem;
 }
 
+section[data-testid="stSidebar"] {
+    display: none !important;
+}
+
+button[kind="secondary"] {
+    font-family: 'Noto Sans KR', sans-serif;
+}
+
 .header {
+    position: relative;
+    overflow: hidden;
     background: linear-gradient(135deg, #ffffff 0%, #eef6ff 42%, #ffe3f1 100%);
     border-bottom: 8px solid #064EA4;
     padding: 26px 34px 18px 34px;
@@ -821,6 +967,30 @@ html, body, [class*="css"] {
     font-size: 14px;
 }
 
+
+.header::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 20% 20%, rgba(255,255,255,.75), transparent 28%), linear-gradient(90deg, rgba(255,255,255,.94), rgba(255,255,255,.72));
+    z-index: 0;
+}
+.header > * { position: relative; z-index: 1; }
+.header-main-row { display:flex; align-items:center; gap:18px; }
+.wkbl-brand-logo { width:92px; max-height:70px; object-fit:contain; background:rgba(255,255,255,.78); border-radius:18px; padding:8px; box-shadow:0 10px 22px rgba(15,23,42,.14); }
+.club-strip { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-top:18px; padding:10px 12px; background:rgba(255,255,255,.78); border:1px solid rgba(255,255,255,.9); border-radius:18px; backdrop-filter: blur(4px); }
+.club-logo { display:flex; align-items:center; gap:7px; font-size:12px; font-weight:900; color:#334155; padding:5px 8px; border-radius:999px; background:rgba(248,250,252,.86); }
+.club-logo img { width:36px; height:36px; object-fit:contain; }
+.team-logo-fallback { font-size:10px; font-weight:900; }
+.hero { background-size:cover !important; background-position:center !important; position:relative; overflow:hidden; min-height:280px; display:flex; flex-direction:column; justify-content:flex-end; }
+.hero::after { content:""; position:absolute; inset:auto -12% -35% auto; width:420px; height:420px; background:rgba(233,30,115,.42); filter:blur(80px); }
+.roster-market { background:#f8fafc; border:1px solid #e5e7eb; border-radius:24px; padding:18px; margin:14px 0 18px; }
+.roster-market-title { font-weight:900; color:#111827; margin-bottom:8px; }
+.card-hint { color:#64748b; font-size:13px; margin-bottom:14px; }
+.selected-card-button .stButton>button { background:#111827; color:white; border:0; font-weight:900; border-radius:999px; }
+.available-card-button .stButton>button { background:white; color:#064EA4; border:1px solid #bfdbfe; font-weight:900; border-radius:999px; }
+.reveal-note { color:#64748b; font-size:13px; margin:-4px 0 14px; }
+
 .data-badge {
     display:inline-block;
     padding: 3px 8px;
@@ -836,27 +1006,39 @@ html, body, [class*="css"] {
 # =========================
 # Helpers
 # =========================
-def player_card(p, priority=None, captain=False):
+def player_card(p, priority=None, captain=False, allstar=False, compact=False):
     """
     Uses components.html so the card is rendered as HTML,
-    not printed as raw tag text.
+    not printed as raw tag text. Position color rule:
+    Back Court = blue, Front Court = pink.
     """
     price = p.get("current_price", p.get("initial_price", MIN_PRICE))
     team = p.get("team_2025_26", "")
-    top_class = "card-top-pink" if team in ["BNK썸", "KB스타즈", "삼성생명"] else "card-top-blue"
-    name_class = "name-pink" if team in ["BNK썸", "KB스타즈", "삼성생명"] else "name-blue"
+    is_back = p.get("position_label") == "Back Court"
+    top_class = "card-top-blue" if is_back else "card-top-pink"
+    name_class = "name-blue" if is_back else "name-pink"
     captain_html = '<div class="captain">C</div>' if captain else ""
+    crown_html = '<div class="crown">👑</div>' if captain else ""
     priority_html = f'<div class="priority">{priority}</div>' if priority else ""
+    allstar_class = " allstar-glow" if allstar else ""
+    compact_class = " compact" if compact else ""
     initial = p["name"][0]
     img_path = find_image(p)
     data_url = image_data_url(img_path)
+    logo_url = team_logo_data_url(team)
 
     if data_url:
         avatar_html = f'<div class="avatar"><img src="{data_url}" alt="{p["name"]}"></div>'
     else:
         avatar_html = f'<div class="avatar">{initial}</div>'
 
+    if logo_url:
+        team_badge_html = f'<div class="team-badge"><img src="{logo_url}" alt="{team}"><span>{team}</span></div>'
+    else:
+        team_badge_html = f'<div class="team-badge"><span>{team}</span></div>'
+
     ppg_label = "No prev. data" if not p["previous_data"] else f'Fantasy {p["fantasy_score"]:.2f}'
+    delay = 0.06 * ((int(priority) - 1) if isinstance(priority, int) else 0)
 
     html = f"""
     <!DOCTYPE html>
@@ -865,140 +1047,37 @@ def player_card(p, priority=None, captain=False):
     <meta charset="utf-8">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;700&family=Noto+Sans+KR:wght@400;700;900&display=swap');
-        body {{
-            margin: 0;
-            padding: 8px;
-            font-family: 'Noto Sans KR', sans-serif;
-            background: transparent;
-        }}
+        body {{ margin: 0; padding: 8px; font-family: 'Noto Sans KR', sans-serif; background: transparent; }}
         .player-card {{
-            position: relative;
-            background: white;
-            border-radius: 18px;
-            overflow: hidden;
-            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
-            border: 1px solid #e5e7eb;
-            text-align: center;
-            width: 100%;
-            box-sizing: border-box;
+            position: relative; background: white; border-radius: 18px; overflow: hidden;
+            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18); border: 1px solid #e5e7eb;
+            text-align: center; width: 100%; box-sizing: border-box;
+            animation: pop .42s cubic-bezier(.2,1.5,.4,1) both; animation-delay:{delay:.2f}s;
         }}
-        .card-top-blue {{
-            background: linear-gradient(135deg, #bfdbfe 0%, #064EA4 100%);
-            height: 128px;
-            padding-top: 8px;
-        }}
-        .card-top-pink {{
-            background: linear-gradient(135deg, #fbcfe8 0%, #E91E73 100%);
-            height: 128px;
-            padding-top: 8px;
-        }}
-        .avatar {{
-            width: 88px;
-            height: 88px;
-            border-radius: 999px;
-            background: white;
-            margin: 18px auto 0 auto;
-            border: 4px solid white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 30px;
-            font-weight: 900;
-            color: #111827;
-            overflow: hidden;
-        }}
-        .avatar img {{
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }}
-        .pos {{
-            position: absolute;
-            top: 14px;
-            right: 14px;
-            background: white;
-            border-radius: 8px;
-            padding: 4px 7px;
-            font-size: 12px;
-            font-weight: 900;
-            color: #111827;
-        }}
-        .team-badge {{
-            position: absolute;
-            top: 14px;
-            left: 14px;
-            background: rgba(255,255,255,0.92);
-            border-radius: 8px;
-            padding: 4px 7px;
-            font-size: 10px;
-            font-weight: 900;
-            color: #111827;
-        }}
-        .salary {{
-            font-family: 'Oswald', sans-serif;
-            font-size: 28px;
-            font-weight: 700;
-            color: #111827;
-            padding: 4px 0;
-            background: white;
-        }}
-        .name-blue {{
-            background: #064EA4;
-            color: white;
-            font-weight: 900;
-            padding: 6px 0;
-        }}
-        .name-pink {{
-            background: #E91E73;
-            color: white;
-            font-weight: 900;
-            padding: 6px 0;
-        }}
-        .ppg {{
-            background: #f8fafc;
-            font-size: 12px;
-            font-weight: 800;
-            color: #475569;
-            padding: 7px 0;
-        }}
-        .captain {{
-            position: absolute;
-            right: 10px;
-            top: 104px;
-            width: 32px;
-            height: 32px;
-            border-radius: 999px;
-            background: #064EA4;
-            color: white;
-            border: 4px solid white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 900;
-        }}
-        .priority {{
-            position: absolute;
-            left: 10px;
-            top: 104px;
-            width: 30px;
-            height: 30px;
-            border-radius: 999px;
-            background: #E91E73;
-            color: white;
-            border: 4px solid white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 900;
-            z-index: 5;
-        }}
+        @keyframes pop {{ 0% {{ transform: translateY(18px) scale(.84); opacity:0; filter:blur(3px); }} 100% {{ transform: translateY(0) scale(1); opacity:1; filter:blur(0); }} }}
+        .compact {{ transform-origin: top center; }}
+        .allstar-glow {{ border: 3px solid #facc15; box-shadow: 0 0 0 4px rgba(250,204,21,.26), 0 0 34px rgba(250,204,21,.78), 0 10px 22px rgba(15,23,42,.2); }}
+        .card-top-blue {{ background: linear-gradient(135deg, #bfdbfe 0%, #064EA4 100%); height: {108 if compact else 128}px; padding-top: 8px; }}
+        .card-top-pink {{ background: linear-gradient(135deg, #fbcfe8 0%, #E91E73 100%); height: {108 if compact else 128}px; padding-top: 8px; }}
+        .avatar {{ width: {72 if compact else 88}px; height: {72 if compact else 88}px; border-radius: 999px; background: white; margin: {18 if not compact else 17}px auto 0 auto; border: 4px solid white; display:flex; align-items:center; justify-content:center; font-size:30px; font-weight:900; color:#111827; overflow:hidden; }}
+        .avatar img {{ width:100%; height:100%; object-fit:cover; }}
+        .pos {{ position:absolute; top:14px; right:14px; background:white; border-radius:8px; padding:4px 7px; font-size:12px; font-weight:900; color:#111827; }}
+        .team-badge {{ position:absolute; top:12px; left:12px; background:rgba(255,255,255,.94); border-radius:999px; padding:3px 7px 3px 4px; font-size:9px; font-weight:900; color:#111827; display:flex; align-items:center; gap:4px; max-width:98px; overflow:hidden; white-space:nowrap; }}
+        .team-badge img {{ width:20px; height:20px; object-fit:contain; }}
+        .salary {{ font-family:'Oswald', sans-serif; font-size:{24 if compact else 28}px; font-weight:700; color:#111827; padding:4px 0; background:white; }}
+        .name-blue {{ background:#064EA4; color:white; font-weight:900; padding:6px 0; font-size:{13 if compact else 16}px; }}
+        .name-pink {{ background:#E91E73; color:white; font-weight:900; padding:6px 0; font-size:{13 if compact else 16}px; }}
+        .ppg {{ background:#f8fafc; font-size:{10 if compact else 12}px; font-weight:800; color:#475569; padding:7px 0; }}
+        .captain {{ position:absolute; right:10px; top:{86 if compact else 104}px; width:32px; height:32px; border-radius:999px; background:#111827; color:#facc15; border:4px solid white; display:flex; align-items:center; justify-content:center; font-weight:900; }}
+        .crown {{ position:absolute; left:50%; top:2px; transform:translateX(-50%); font-size:{24 if compact else 30}px; z-index:10; filter:drop-shadow(0 3px 3px rgba(0,0,0,.25)); }}
+        .priority {{ position:absolute; left:10px; top:{86 if compact else 104}px; width:30px; height:30px; border-radius:999px; background:#E91E73; color:white; border:4px solid white; display:flex; align-items:center; justify-content:center; font-weight:900; z-index:5; }}
     </style>
     </head>
     <body>
-        <div class="player-card">
-            {priority_html}
+        <div class="player-card{allstar_class}{compact_class}">
+            {priority_html}{crown_html}
             <div class="{top_class}">
-                <div class="team-badge">{team}</div>
+                {team_badge_html}
                 <div class="pos">{p["position_short"]}</div>
                 {avatar_html}
             </div>
@@ -1010,7 +1089,40 @@ def player_card(p, priority=None, captain=False):
     </body>
     </html>
     """
-    components.html(html, height=292, scrolling=False)
+    components.html(html, height=246 if compact else 292, scrolling=False)
+
+
+def render_roster_card_selector(available_players, selected_keys, players_list):
+    st.markdown('<div class="roster-market"><div class="roster-market-title">CARD PLAYER MARKET</div><div class="card-hint">카드 아래 버튼으로 선수를 추가/제외하세요. Back Court는 파란색, Front Court는 핑크색으로 표시됩니다.</div>', unsafe_allow_html=True)
+    selected_set = set(selected_keys)
+    ordered = sorted(
+        available_players,
+        key=lambda p: (
+            0 if player_key(p) in selected_set else 1,
+            p.get("position_label", ""),
+            -float(p.get("current_price", p.get("initial_price", MIN_PRICE))),
+            p.get("name", ""),
+        ),
+    )
+    cols = st.columns(4)
+    for idx, p in enumerate(ordered):
+        k = player_key(p)
+        selected = k in selected_set
+        with cols[idx % 4]:
+            player_card(p, compact=True)
+            css_class = "selected-card-button" if selected else "available-card-button"
+            st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
+            if selected:
+                if st.button("✓ Selected · Remove", key=f"roster_card_remove_{k}", use_container_width=True):
+                    st.session_state.roster_working_keys = [x for x in selected_keys if x != k]
+                    st.rerun()
+            else:
+                disabled = len(selected_keys) >= ROSTER_SIZE
+                if st.button("+ Add", key=f"roster_card_add_{k}", use_container_width=True, disabled=disabled):
+                    st.session_state.roster_working_keys = list(selected_keys) + [k]
+                    st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 def summary_card(label, value, icon="🏀", detail=""):
     st.markdown(f"""
@@ -1021,11 +1133,21 @@ def summary_card(label, value, icon="🏀", detail=""):
     """, unsafe_allow_html=True)
 
 def header():
-    st.markdown("""
-    <div class="header">
-        <div class="logo"><span class="blue">WKBL</span> <span class="pink">FANTASY</span></div>
-        <div class="subtitle">SALARY CAP EDITION</div>
-        <div style="margin-top:14px;color:#475569;font-weight:900;">🏀 Build your roster · Set your line-up · Climb the rankings</div>
+    hero = asset_data_url(HERO_IMAGE_PATH)
+    wkbl = asset_data_url(WKBL_LOGO_PATH)
+    bg = f"background-image: linear-gradient(90deg, rgba(255,255,255,.96) 0%, rgba(255,255,255,.78) 46%, rgba(255,255,255,.16) 100%), url('{hero}'); background-size: cover; background-position:center;" if hero else ""
+    logo_html = f'<img class="wkbl-brand-logo" src="{wkbl}" alt="WKBL logo">' if wkbl else ""
+    st.markdown(f"""
+    <div class="header" style="{bg}">
+        <div class="header-main-row">
+            {logo_html}
+            <div>
+                <div class="logo"><span class="blue">WKBL</span> <span class="pink">FANTASY</span></div>
+                <div class="subtitle">SALARY CAP EDITION</div>
+                <div style="margin-top:14px;color:#334155;font-weight:900;">🏀 Build your roster · Set your line-up · Climb the rankings</div>
+            </div>
+        </div>
+        <div class="club-strip">{team_logo_strip_html()}</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1139,7 +1261,7 @@ def initialize_fantasy_state(players_list):
         "chip_allstar_used_labels_by_gw": {},
         "simulation_game_index": 0,
         "simulation_history": [],
-        "simulation_team_scores": {team: 0.0 for team in SIMULATION_TEAMS},
+        "simulation_team_scores": {team: 0.0 for team in get_fantasy_teams()},
         "simulation_team_rosters": {},
         "simulation_team_starting": {},
         "simulation_team_captains": {},
@@ -1798,11 +1920,47 @@ def current_allowed_teams():
     g = current_game()
     return game_allowed_teams(g) if g else []
 
+def gameday_lineup_report(game, players_list):
+    """Check whether the user's roster and Starting 5 are legal for the next real game."""
+    allowed = set(game_allowed_teams(game))
+    roster_keys = list(st.session_state.user_roster_keys)
+    starting_keys = list(st.session_state.user_starting_keys)
+    roster_players = keys_to_players(roster_keys, players_list)
+    starting_players = keys_to_players(starting_keys, players_list)
+    errors = []
+
+    if allowed:
+        bad_roster = [p for p in roster_players if p.get("team_2025_26") not in allowed]
+        bad_starting = [p for p in starting_players if p.get("team_2025_26") not in allowed]
+        if bad_roster:
+            names = ", ".join([f"{p['name']}({p['team_2025_26']})" for p in bad_roster])
+            errors.append(f"로스터에 이번 경기 두 팀 소속이 아닌 선수가 있습니다: {names}")
+        if bad_starting:
+            names = ", ".join([f"{p['name']}({p['team_2025_26']})" for p in bad_starting])
+            errors.append(f"Starting 5에 이번 경기 두 팀 소속이 아닌 선수가 있습니다: {names}")
+
+    roster_status = roster_report(roster_keys, players_list)
+    if not roster_status["valid"]:
+        errors.extend(roster_status["errors"])
+
+    starting_status = validate_starting(starting_keys, roster_keys, players_list, st.session_state.user_formation)
+    if not starting_status["valid"]:
+        errors.extend(starting_status["errors"])
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "allowed_teams": list(allowed),
+        "roster_players": roster_players,
+        "starting_players": starting_players,
+    }
+
+
 def reset_simulation_runtime(players_list):
     reset_market_state(players_list)
     st.session_state.simulation_game_index = 0
     st.session_state.simulation_history = []
-    st.session_state.simulation_team_scores = {team: 0.0 for team in SIMULATION_TEAMS}
+    st.session_state.simulation_team_scores = {team: 0.0 for team in get_fantasy_teams()}
     st.session_state.simulation_team_rosters = {}
     st.session_state.simulation_team_starting = {}
     st.session_state.simulation_team_captains = {}
@@ -1810,7 +1968,7 @@ def reset_simulation_runtime(players_list):
     st.session_state.user_transfer_penalty_points = 0.0
     st.session_state.user_transfer_log = []
     st.session_state.current_transfer_gameweek = 1
-    st.session_state.chip_captain_active = False
+    st.session_state.chip_captain_active = False  # legacy state; captain bonus is automatic now
     st.session_state.chip_wildcard_active = False
     st.session_state.chip_wildcard_available = True
     st.session_state.chip_allstar_active = False
@@ -1824,7 +1982,7 @@ def reset_simulation_runtime(players_list):
 
 def initialize_ai_managers(players_list):
     user_team = st.session_state.simulation_user_team
-    for idx, team in enumerate(SIMULATION_TEAMS):
+    for idx, team in enumerate(get_fantasy_teams()):
         if team == user_team:
             roster = st.session_state.user_roster_keys
             formation = st.session_state.user_formation
@@ -1855,21 +2013,21 @@ def start_simulation(user_team):
         {
             "Rank": 1,
             "Team": team,
-            "Manager": "You" if team == user_team else "AI",
+            "Manager": "나" if team == user_team else "AI",
             "Points": 0.0,
-            "Transfers": 0,
+            "Transfers": "∞",
             "Budget": format_price(BUDGET_CAP),
         }
-        for team in SIMULATION_TEAMS
+        for team in get_fantasy_teams()
     ]
 
 def update_league_table_from_scores():
     league = []
-    for team in SIMULATION_TEAMS:
+    for team in get_fantasy_teams():
         league.append({
             "Rank": 1,
             "Team": team,
-            "Manager": "You" if team == st.session_state.simulation_user_team else "AI",
+            "Manager": "나" if team == st.session_state.simulation_user_team else "AI",
             "Points": round(float(st.session_state.simulation_team_scores.get(team, 0.0)), 2),
             "Transfers": "∞",
             "Budget": format_price(BUDGET_CAP),
@@ -1890,7 +2048,7 @@ def process_one_game(game, players_list):
     # AI managers also rebuild a valid roster from those two teams for the current game.
     allowed = set(game_allowed_teams(game))
     game_pool = [p for p in players_list if not allowed or p.get("team_2025_26") in allowed]
-    for idx_team, fantasy_team in enumerate(SIMULATION_TEAMS):
+    for idx_team, fantasy_team in enumerate(get_fantasy_teams()):
         if fantasy_team != st.session_state.simulation_user_team:
             ai_roster = generate_auto_roster(game_pool, seed=1000 + st.session_state.simulation_game_index * 31 + idx_team)
             ai_starting = auto_starting_keys(ai_roster, players_list, "2 Back Court / 3 Front Court")
@@ -1937,28 +2095,30 @@ def process_one_game(game, players_list):
         })
 
     game_team_points = {}
-    for fantasy_team in SIMULATION_TEAMS:
+    for fantasy_team in get_fantasy_teams():
+        roster = st.session_state.simulation_team_rosters.get(fantasy_team, [])
         starting = st.session_state.simulation_team_starting.get(fantasy_team, [])
+        bench = [k for k in roster if k not in starting]
         captain = st.session_state.simulation_team_captains.get(fantasy_team)
-        base_points = 0.0
-        for k in starting:
-            base_points += row_scores.get(k, 0.0)
+
+        starter_points = sum(row_scores.get(k, 0.0) * STARTING_SCORE_MULTIPLIER for k in starting)
+        bench_points = sum(row_scores.get(k, 0.0) * BENCH_SCORE_MULTIPLIER for k in bench)
 
         bonus_points = 0.0
-        if fantasy_team == st.session_state.simulation_user_team:
-            if st.session_state.chip_captain_active and captain:
-                bonus_points += row_scores.get(captain, 0.0)
-            if st.session_state.chip_allstar_active:
-                bonus_points += base_points * 0.20
+        # Captain is no longer a manually activated chip. The selected captain always scores 2x.
+        if captain and captain in starting:
+            bonus_points += row_scores.get(captain, 0.0) * STARTING_SCORE_MULTIPLIER
+        if fantasy_team == st.session_state.simulation_user_team and st.session_state.chip_allstar_active:
+            bonus_points += starter_points * 0.20
 
-        total = base_points + bonus_points
+        total = starter_points + bench_points + bonus_points
         st.session_state.simulation_team_scores[fantasy_team] = round(
             float(st.session_state.simulation_team_scores.get(fantasy_team, 0.0)) + total,
             2,
         )
         game_team_points[fantasy_team] = round(total, 2)
 
-    st.session_state.chip_captain_active = False
+    st.session_state.chip_captain_active = False  # legacy state; captain bonus is automatic now
     if st.session_state.chip_allstar_active:
         used_gw = to_int(game.get("gameweek", st.session_state.current_transfer_gameweek), st.session_state.current_transfer_gameweek)
         used_label = f"{game.get('date', '')} {game_match_label(game, show_score=False)}".strip()
@@ -2010,39 +2170,110 @@ game_rows_2025_26, games_2025_26, game_csv_encoding = load_game_results()
 game_csv_loaded = len(games_2025_26) > 0
 
 # =========================
-# Sidebar
+# Splash / Start Gate
 # =========================
-with st.sidebar:
-    st.markdown("## 🏀 WKBL Fantasy")
-    language = st.selectbox("Country / Language", ["한국어 (KR)", "English"])
-    st.markdown("### Data")
-    if csv_loaded:
-        st.success(f"players_2024_25.csv loaded ({csv_encoding})")
-    else:
-        st.warning("players_2024_25.csv not found. Showing sample data.")
+def render_splash_screen():
+    splash = asset_data_url(SPLASH_BG_PATH) or asset_data_url(HERO_IMAGE_PATH)
+    bg = f"background-image: linear-gradient(90deg, rgba(2,6,23,.70), rgba(2,6,23,.28), rgba(2,6,23,.72)), url('{splash}');" if splash else "background: radial-gradient(circle at 50% 40%, #1d4ed8 0%, #020617 70%);"
+    st.markdown(f"""
+    <style>
+    .splash-screen {{
+        min-height: 92vh;
+        border-radius: 0;
+        margin: -1rem -2.5rem 0 -2.5rem;
+        background-size: cover;
+        background-position: center;
+        position: relative;
+        overflow: hidden;
+        {bg}
+    }}
+    .splash-version {{
+        position:absolute; top:24px; right:34px; color:rgba(255,255,255,.88);
+        font-weight:800; letter-spacing:.5px; font-size:16px; text-shadow:0 3px 10px rgba(0,0,0,.35);
+    }}
+    .splash-title {{
+        position:absolute; left:50%; top:18%; transform:translateX(-50%);
+        font-family:'Oswald', sans-serif; color:white; font-size:76px; font-weight:900;
+        text-shadow:0 6px 30px rgba(0,0,0,.60); letter-spacing:-1px; text-align:center;
+    }}
+    .splash-title span {{ color:#E91E73; }}
+    .start-guide {{
+        position:absolute; left:50%; bottom:120px; transform:translateX(-50%);
+        color:rgba(255,255,255,.82); font-weight:800; text-align:center;
+    }}
+    div[data-testid="stButton"] > button:has(div), .stButton > button {{
+        font-weight:900;
+    }}
+    .start-button-wrap {{
+        position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%); z-index: 10;
+        width: 260px;
+    }}
+    div[data-testid="stButton"] {{
+        position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); z-index: 30; width: 260px;
+    }}
+    div[data-testid="stButton"] button {{
+        background: linear-gradient(135deg, #111827, #020617) !important;
+        color: #fff !important; border: 2px solid #facc15 !important; border-radius: 6px !important;
+        font-size: 22px !important; letter-spacing: 1px; padding: 0.9rem 1rem !important;
+        box-shadow: 0 0 24px rgba(250,204,21,.38), 0 12px 36px rgba(0,0,0,.4) !important;
+    }}
+    </style>
+    <div class="splash-screen">
+        <div class="splash-version">{APP_VERSION}</div>
+        <div class="splash-title">WKBL <span>FANTASY</span></div>
+        <div class="start-guide">START를 누르면 배경음악이 반복 재생됩니다.</div>
+    </div>
+    """, unsafe_allow_html=True)
+    _, mid, _ = st.columns([3, 1.2, 3])
+    with mid:
+        if st.button("START", use_container_width=True):
+            st.session_state.bgm_enabled = True
+            st.session_state.app_phase = "name_input"
+            st.rerun()
 
-    if game_csv_loaded:
-        if game_csv_encoding == "raw_game_results_2025_26.txt":
-            st.success("raw_game_results_2025_26.txt parsed and connected")
-            st.caption(f"Games: {len(games_2025_26)} / Player rows: {len(game_rows_2025_26)}")
-            raw_rows_for_download = read_raw_game_results_if_available()
-            if raw_rows_for_download:
-                st.download_button(
-                    "Download converted game_results_2025_26.csv",
-                    data=game_rows_to_csv_text(raw_rows_for_download),
-                    file_name="game_results_2025_26.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-        else:
-            st.success(f"game_results_2025_26.csv loaded ({game_csv_encoding})")
-            st.caption(f"Games: {len(games_2025_26)} / Player rows: {len(game_rows_2025_26)}")
-    else:
-        st.info("game_results_2025_26.csv not connected yet. You can also upload raw_game_results_2025_26.txt.")
 
-    st.caption("시간 기준: KST")
-    st.caption(APP_VERSION)
+def render_name_input_screen():
+    render_bgm_player()
+    splash = asset_data_url(SPLASH_BG_PATH) or asset_data_url(HERO_IMAGE_PATH)
+    bg = f"background-image: linear-gradient(120deg, rgba(2,6,23,.80), rgba(6,78,164,.62), rgba(233,30,115,.55)), url('{splash}');" if splash else "background: linear-gradient(135deg,#020617,#064EA4,#E91E73);"
+    st.markdown(f"""
+    <style>
+    .name-screen {{
+        min-height: 88vh; margin: -1rem -2.5rem 0 -2.5rem; padding: 120px 24px 24px;
+        background-size: cover; background-position:center; {bg}
+    }}
+    .name-panel {{
+        max-width: 560px; margin: 0 auto; background: rgba(255,255,255,.94); border: 1px solid rgba(255,255,255,.36);
+        border-radius: 28px; padding: 34px; box-shadow: 0 24px 80px rgba(0,0,0,.35);
+        text-align:center;
+    }}
+    .name-title {{font-family:'Oswald',sans-serif;font-size:46px;font-weight:900;color:#0f172a;}}
+    .name-sub {{color:#64748b;font-weight:800;margin:8px 0 20px;}}
+    </style>
+    <div class="name-screen">
+      <div class="name-panel">
+        <div class="name-title">감독 이름 입력</div>
+        <div class="name-sub">AI 5팀과 경쟁할 내 감독명을 입력하세요.</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+    with st.container():
+        name = st.text_input("이름을 입력하세요", value=st.session_state.manager_name, max_chars=16, placeholder="예: 채영")
+        if st.button("게임 시작", use_container_width=True):
+            if not name.strip():
+                st.warning("이름을 먼저 입력해 주세요.")
+            else:
+                begin_game_session(players, games_2025_26, name.strip())
+                st.rerun()
 
+if st.session_state.app_phase == "splash":
+    render_splash_screen()
+    st.stop()
+elif st.session_state.app_phase == "name_input":
+    render_name_input_screen()
+    st.stop()
+
+render_bgm_player()
 header()
 nav()
 page = st.session_state.page
@@ -2057,13 +2288,17 @@ highest_player = max(players_with_data, key=lambda p: p["fantasy_score"], defaul
 # Pages
 # =========================
 if page == "Home":
-    st.markdown("""
-    <div class="hero">
+    hero = asset_data_url(HERO_IMAGE_PATH)
+    hero_style = f"background-image: linear-gradient(135deg, rgba(6,78,164,.92) 0%, rgba(15,23,42,.76) 48%, rgba(233,30,115,.72) 100%), url('{hero}');" if hero else ""
+    st.markdown(f"""
+    <div class="hero" style="{hero_style}">
         <div class="hero-title">WKBL Fantasy Game</div>
-        <div style="font-size:19px;max-width:760px;line-height:1.7;">
-            2024-25 누적 기록으로 2025-26 시즌 초기 가격을 설정하고,
+        <div style="font-size:22px;font-weight:900;margin:8px 0 12px;position:relative;z-index:1;">{st.session_state.get('manager_name','')} 감독님, 환영합니다.</div>
+        <div style="font-size:19px;max-width:760px;line-height:1.7;position:relative;z-index:1;">
+            2024-25 누적 기록으로 2025-26 시즌 초기 가격을 설정하고,<br>
             굿디펜스를 제외한 WKBL 공헌도 기반 Fantasy Score로 경쟁하세요.
         </div>
+        <div class="club-strip" style="position:relative;z-index:1;max-width:900px;">{team_logo_strip_html()}</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -2149,7 +2384,7 @@ elif page == "My Team":
             if not new_roster:
                 new_roster = generate_auto_roster(available_players, seed=base_seed)
             st.session_state.user_roster_keys = new_roster
-            st.session_state.roster_select = new_roster
+            st.session_state.roster_working_keys = list(new_roster)
             st.session_state.user_starting_keys = auto_starting_keys(st.session_state.user_roster_keys, players, st.session_state.user_formation)
             if st.session_state.user_starting_keys:
                 st.session_state.user_captain_key = st.session_state.user_starting_keys[0]
@@ -2157,14 +2392,15 @@ elif page == "My Team":
             st.success("새 로스터를 자동 생성했습니다. Starting 5도 함께 갱신되었습니다.")
             st.rerun()
 
-        selected_keys = st.multiselect(
-            "Select 10 players",
-            options=all_keys,
-            default=[k for k in st.session_state.user_roster_keys if k in all_keys],
-            format_func=lambda k: label_for_key(k, players),
-            placeholder="선수 10명을 선택하세요.",
-            key="roster_select",
-        )
+        if "roster_working_keys" not in st.session_state:
+            st.session_state.roster_working_keys = list(st.session_state.user_roster_keys)
+        # Keep the working selection inside the current gameday's two-team player pool.
+        st.session_state.roster_working_keys = [k for k in st.session_state.roster_working_keys if k in all_keys]
+        if st.session_state.user_roster_keys and not st.session_state.roster_working_keys:
+            st.session_state.roster_working_keys = [k for k in st.session_state.user_roster_keys if k in all_keys]
+
+        selected_keys = list(st.session_state.roster_working_keys)
+        render_roster_card_selector(available_players, selected_keys, players)
 
         report = roster_report(selected_keys, players)
         # Build Your Roster and Set Your Line-up are linked through this working roster.
@@ -2201,6 +2437,7 @@ elif page == "My Team":
                 })
 
             st.session_state.user_roster_keys = list(selected_keys)
+            st.session_state.roster_working_keys = list(selected_keys)
             st.session_state.user_starting_keys = auto_starting_keys(st.session_state.user_roster_keys, players, st.session_state.user_formation)
             if st.session_state.user_captain_key not in st.session_state.user_starting_keys:
                 st.session_state.user_captain_key = st.session_state.user_starting_keys[0] if st.session_state.user_starting_keys else None
@@ -2272,46 +2509,41 @@ elif page == "My Team":
             if st.session_state.user_captain_key not in captain_options:
                 st.session_state.user_captain_key = captain_options[0]
             st.session_state.user_captain_key = st.selectbox(
-                "Captain 선택: Gameday Captain을 발동하면 이 선수 점수가 2배가 됩니다.",
+                "Captain 선택: 선택한 선수는 자동으로 다음 경기 점수가 2배가 됩니다.",
                 options=captain_options,
                 index=captain_options.index(st.session_state.user_captain_key),
                 format_func=lambda k: label_for_key(k, players),
             )
 
-        st.markdown('<div class="court"><b style="color:#064EA4;">STARTING 5</b>', unsafe_allow_html=True)
+        st.markdown('<div class="court"><b style="color:#064EA4;">STARTING 5 REVEAL</b><div class="reveal-note">가격이 낮은 선수부터 높은 선수 순서로 카드가 등장합니다. Starting 5는 점수 100% 반영, Captain은 자동 2배입니다.</div>', unsafe_allow_html=True)
         cols = st.columns(5)
-        for col, p in zip(cols, keys_to_players(display_starting_keys, players)):
+        allstar_glow = bool(st.session_state.get("chip_allstar_active", False))
+        starting_players_sorted = sorted(keys_to_players(display_starting_keys, players), key=lambda p: float(p.get("current_price", p.get("initial_price", MIN_PRICE))))
+        for i, (col, p) in enumerate(zip(cols, starting_players_sorted), start=1):
             with col:
-                player_card(p, captain=(player_key(p) == st.session_state.user_captain_key))
+                player_card(p, priority=i, captain=(player_key(p) == st.session_state.user_captain_key), allstar=allstar_glow)
         st.markdown('</div>', unsafe_allow_html=True)
 
         bench_keys = [k for k in working_roster_keys if k not in display_starting_keys]
-        st.markdown('<div class="bench"><b style="color:#E91E73;">BENCH</b>', unsafe_allow_html=True)
+        bench_players_sorted = sorted(keys_to_players(bench_keys, players), key=lambda p: float(p.get("current_price", p.get("initial_price", MIN_PRICE))))
+        st.markdown(f'<div class="bench"><b style="color:#E91E73;">BENCH</b><div style="font-size:13px;color:#64748b;margin-top:4px;">Bench players also score, but only at {BENCH_SCORE_MULTIPLIER:.0%} of their actual Fantasy Score. They are smaller cards because Starting 5 remains the main decision.</div>', unsafe_allow_html=True)
         cols = st.columns(5)
-        for i, (col, p) in enumerate(zip(cols, keys_to_players(bench_keys, players)), start=1):
+        for i, (col, p) in enumerate(zip(cols, bench_players_sorted), start=1):
             with col:
-                player_card(p, priority=i)
+                player_card(p, priority=i, compact=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
     with right:
         st.markdown('<div class="panel"><div class="panel-title">CHIPS</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-        st.caption("칩은 버튼을 누르는 순간 활성화되고, 다음 시뮬레이션 경기 1경기에 적용됩니다. Wildcard만 다음 로스터 저장에 적용됩니다.")
+        st.caption("Captain은 선택 즉시 자동 적용됩니다. Bench는 50% 점수로 반영됩니다. All-Star만 버튼으로 활성화합니다.")
 
         if st.session_state.user_captain_key:
-            st.markdown(f"**현재 Captain:** {label_for_key(st.session_state.user_captain_key, players)}")
-
-        if st.session_state.chip_captain_active:
-            st.success("👑 Gameday Captain active: 다음 경기에서 Captain 점수 2배")
+            st.success(f"👑 Captain: {label_for_key(st.session_state.user_captain_key, players)} · 다음 경기 자동 2배")
         else:
-            if st.button("👑 Activate Gameday Captain", use_container_width=True, disabled=not bool(st.session_state.user_starting_keys)):
-                st.session_state.chip_captain_active = True
-                st.rerun()
-        st.caption("효과: 위에서 선택한 Captain의 다음 경기 점수가 한 번 더 더해집니다.")
-
-        st.button("🛡️ Wildcard Disabled", use_container_width=True, disabled=True)
-        st.caption("현재 규칙에서는 Gameday마다 이적이 무제한이라 Wildcard가 필요 없습니다.")
+            st.info("Starting 5를 저장한 뒤 Captain을 선택하세요.")
+        st.caption("Captain 효과: 선택한 선수의 다음 경기 Fantasy Score가 한 번 더 더해집니다.")
 
         st.markdown("**⭐ All-Star**")
         current_game_obj = current_game()
@@ -2358,13 +2590,11 @@ elif page == "My Team":
             ]
             st.markdown("<b>Recent transactions</b>", unsafe_allow_html=True)
             st.markdown(table_html(log_rows, ["GW", "Transfers", "Note"]), unsafe_allow_html=True)
-        if st.session_state.chip_wildcard_active:
-            st.markdown("<b style='color:#E91E73;'>Wildcard active</b>", unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="panel"><div class="panel-title">LEAGUE TABLE</div>', unsafe_allow_html=True)
         league_rows = sorted(
-            [(team, st.session_state.simulation_team_scores.get(team, 0.0)) for team in SIMULATION_TEAMS],
+            [(team, st.session_state.simulation_team_scores.get(team, 0.0)) for team in get_fantasy_teams()],
             key=lambda x: (-x[1], x[0])
         )
         for rank, (team, points) in enumerate(league_rows, start=1):
@@ -2395,7 +2625,7 @@ elif page == "Players":
     if pos_filter != "All":
         filtered = [p for p in filtered if p["position_label"] == pos_filter]
 
-    # Default order: highest initial price first.
+    # Default order: highest current price first.
     filtered = sorted(filtered, key=lambda p: p.get("current_price", p.get("initial_price", MIN_PRICE)), reverse=True)
 
     selected = None
@@ -2414,7 +2644,7 @@ elif page == "Players":
     header_cols[1].markdown("**Team**")
     header_cols[2].markdown("**Position**")
     header_cols[3].markdown("**Fantasy Score**")
-    header_cols[4].markdown("**Initial Price**")
+    header_cols[4].markdown("**Current Price**")
     header_cols[5].markdown("**Data**")
     st.markdown("<hr style='margin: 0.3rem 0 0.6rem 0;'>", unsafe_allow_html=True)
 
@@ -2445,7 +2675,7 @@ elif page == "Simulation":
         <div style="line-height:1.7;color:#475569;">
             전체 경기 결과 CSV를 연결하면 경기 순서대로 Fantasy Score, Gameweek/Day 점수,
             선수 가격 변동, 사용자 팀과 AI 5개 팀의 리그 점수를 자동 계산합니다.<br>
-            한 경기에서는 그 실제 경기에 출전한 선수만 점수를 얻고, 출전하지 않은 Starting 5 선수는 0점입니다.
+            한 경기에서는 그 실제 경기에 출전한 선수만 점수를 얻습니다. Starting 5는 100%, Bench는 50% 계수로 반영됩니다.
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -2488,21 +2718,9 @@ elif page == "Simulation":
             st.markdown(table_html(preview_rows, ["Game", "Date", "Time", "GW", "Day", "Match", "Venue"]), unsafe_allow_html=True)
 
     if not st.session_state.simulation_started:
-        selected_team = st.selectbox("내가 운영할 팀 선택", SIMULATION_TEAMS)
-        st.caption("선택하지 않은 5개 팀은 AI가 자동으로 로스터와 선발을 구성합니다.")
-
-        if st.button("Start 2025-26 Simulation", use_container_width=True):
-            if not st.session_state.user_roster_keys:
-                start_allowed = game_allowed_teams(games_2025_26[0]) if game_csv_loaded and games_2025_26 else []
-                start_pool = [p for p in players if not start_allowed or p.get("team_2025_26") in start_allowed]
-                st.session_state.user_roster_keys = generate_auto_roster(start_pool, seed=101)
-                st.session_state.roster_select = list(st.session_state.user_roster_keys)
-                st.session_state.user_starting_keys = auto_starting_keys(st.session_state.user_roster_keys, players, st.session_state.user_formation)
-                st.session_state.user_captain_key = st.session_state.user_starting_keys[0] if st.session_state.user_starting_keys else None
-            reset_simulation_runtime(players)
-            start_simulation(selected_team)
-            initialize_ai_managers(players)
-            update_league_table_from_scores()
+        st.info("게임 시작 화면에서 감독 이름을 입력하면 자동으로 시즌이 시작됩니다.")
+        if st.button("시작 화면으로 돌아가기", use_container_width=True):
+            st.session_state.app_phase = "splash"
             st.rerun()
 
     else:
@@ -2532,8 +2750,16 @@ elif page == "Simulation":
             if allowed:
                 st.info(f"이번 경기는 {' vs '.join(allowed)} 선수만 선택/득점할 수 있습니다. My Team에서 이 두 팀 선수로 Gameday roster를 맞춘 뒤 시뮬레이션하세요.")
 
+            readiness = gameday_lineup_report(g, players)
+            if readiness["valid"]:
+                st.success("My Team roster and Starting 5 are valid for this game.")
+            else:
+                st.error("이 경기를 시뮬레이션할 수 없습니다. My Team에서 다음 경기 두 팀 선수로 로스터와 Starting 5를 다시 맞춰 주세요.")
+                for msg in readiness["errors"]:
+                    st.warning(msg)
+
             st.markdown("### Play One Game")
-            if st.button("Simulate Next Game", use_container_width=True):
+            if st.button("Simulate Next Game", use_container_width=True, disabled=not readiness["valid"]):
                 process_one_game(games_2025_26[st.session_state.simulation_game_index], players)
                 st.rerun()
 
@@ -2668,11 +2894,17 @@ elif page == "Help":
 
     ### Chips / Transactions Guide
     - Captain은 My Team의 `SET YOUR LINE-UP` 아래 Captain 선택 박스에서 고릅니다.
-    - `Activate Gameday Captain`: 다음으로 시뮬레이션하는 실제 경기 1경기에서 Captain 점수가 2배가 됩니다.
-    - `Wildcard`: 현재 버전에서는 Gameday마다 이적이 무제한이라 비활성화되어 있습니다.
+    - Captain은 별도 Activate 버튼 없이 자동 적용됩니다. 선택한 Captain의 다음 경기 점수가 한 번 더 더해져 사실상 2배가 됩니다.
     - `Activate All-Star`: Gameweek마다 1회 사용할 수 있습니다. 다음으로 시뮬레이션하는 실제 경기 1경기에서 내 Starting 5 총점에 +20% 보너스가 붙고, 해당 GW에서는 자동으로 Used 상태가 됩니다.
+    - 점수 계수: Starting 5 = 100%, Bench = 50%.
     - Transfers are unlimited every Gameday. 이적 횟수 제한과 점수 페널티는 없습니다.
     - 단, 현재 Gameday에 경기하는 두 팀 선수만 로스터로 선택할 수 있습니다.
+
+    ### Bench Role
+    - Starting 5는 경기 Fantasy Score가 100% 반영됩니다.
+    - Bench 선수는 실제로 그 경기에서 뛰면 Fantasy Score의 50%가 반영됩니다.
+    - 따라서 Bench도 완전히 의미 없는 후보가 아니라, 낮은 계수로 점수를 보태는 보유 자원입니다.
+    - 추후 원하면 DNP/부상/미출전 시 자동 교체 규칙을 추가할 수 있습니다.
 
     ### Important Simulation Detail
     - 각 실제 경기에서는 그 경기에 출전한 선수만 점수를 얻습니다.
