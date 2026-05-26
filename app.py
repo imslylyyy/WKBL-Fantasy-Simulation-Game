@@ -4,6 +4,7 @@ import streamlit.components.v1 as components
 import csv
 import base64
 import mimetypes
+import re
 from pathlib import Path
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide")
@@ -387,23 +388,81 @@ if not players:
 # =========================
 # Image Handling
 # =========================
+def _norm_text(s):
+    """Normalize Korean/ASCII names for filename matching."""
+    if s is None:
+        return ""
+    s = str(s).strip()
+    # unify common separators and remove spaces/punctuation
+    s = s.replace("BNK 썸", "BNK썸")
+    s = s.replace(" ", "")
+    return re.sub(r"[^0-9A-Za-z가-힣]", "", s)
+
+def _team_aliases(team):
+    team = str(team or "").strip()
+    base = _norm_text(team)
+    aliases = {base}
+    if base == "BNK썸":
+        aliases.update({"BNK", "BNKSUM", "BNKSUM"})
+    return {a for a in aliases if a}
+
 def find_image(player):
     """
+    Robust image finder.
     Priority:
-    1. images/선수명_팀명.png/jpg/jpeg/webp
-    2. images/선수명.png/jpg/jpeg/webp
+    1. exact images/선수명_팀명.ext
+    2. exact images/선수명.ext
+    3. normalized stem match containing 선수명 + 팀명
+    4. normalized stem match containing 선수명 only (for unique names)
+    Notes:
+    - Duplicate names like 김단비/김정은/박지수 prefer name+team files.
+    - Supports png/jpg/jpeg/webp and searches recursively in images/.
     """
     name = player["name"]
     team = player["team_2025_26"]
-    candidates = []
-    for ext in ["png", "jpg", "jpeg", "webp"]:
-        candidates.append(IMAGE_DIR / f"{name}_{team}.{ext}")
-    for ext in ["png", "jpg", "jpeg", "webp"]:
-        candidates.append(IMAGE_DIR / f"{name}.{ext}")
 
+    # 1) direct exact paths first
+    candidates = []
+    for ext in ["png", "jpg", "jpeg", "webp", "PNG", "JPG", "JPEG", "WEBP"]:
+        candidates.append(IMAGE_DIR / f"{name}_{team}.{ext}")
+        candidates.append(IMAGE_DIR / f"{name}.{ext}")
     for path in candidates:
         if path.exists():
             return path
+
+    # 2) recursive search with normalized filename matching
+    image_files = []
+    if IMAGE_DIR.exists():
+        for p in IMAGE_DIR.rglob("*"):
+            if p.is_file() and p.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]:
+                image_files.append(p)
+
+    norm_name = _norm_text(name)
+    team_aliases = _team_aliases(team)
+
+    # duplicate names in this dataset should require team-aware preference
+    duplicate_names = {"김단비", "김정은", "박지수"}
+    is_duplicate = name in duplicate_names
+
+    # a) exact normalized stem == name+team or team+name
+    for p in image_files:
+        stem = _norm_text(p.stem)
+        if any(stem == _norm_text(f"{name}{alias}") or stem == _norm_text(f"{name}_{alias}") or stem == _norm_text(f"{alias}{name}") for alias in team_aliases):
+            return p
+
+    # b) contains both player name and team alias somewhere
+    for p in image_files:
+        stem = _norm_text(p.stem)
+        if norm_name and norm_name in stem and any(alias in stem for alias in team_aliases):
+            return p
+
+    # c) only if not duplicate name: stem startswith/contains player name
+    if not is_duplicate:
+        for p in image_files:
+            stem = _norm_text(p.stem)
+            if stem == norm_name or stem.startswith(norm_name) or norm_name in stem:
+                return p
+
     return None
 
 def image_data_url(path):
@@ -672,7 +731,7 @@ def player_card(p, priority=None, captain=False):
     else:
         avatar_html = f'<div class="avatar">{initial}</div>'
 
-    ppg_label = "No prev. data" if not p["previous_data"] else f'Fantasy {p["fantasy_score"]:.1f}'
+    ppg_label = "No prev. data" if not p["previous_data"] else f'Fantasy {p["fantasy_score"]:.2f}'
 
     html = f"""
     <!DOCTYPE html>
@@ -957,9 +1016,9 @@ if page == "Home":
         summary_card("NO PREV. DATA", len(players_no_data), "🆕")
     with c4:
         if highest_player:
-            summary_card("TOP BASE SCORE", f"{max_score:.1f}", "⭐", highest_player["name"])
+            summary_card("TOP BASE SCORE", f"{max_score:.2f}", "⭐", highest_player["name"])
         else:
-            summary_card("TOP BASE SCORE", "0.0", "⭐")
+            summary_card("TOP BASE SCORE", "0.00", "⭐")
 
     st.write("")
     cols = st.columns(4)
@@ -1102,7 +1161,7 @@ elif page == "Players":
             st.session_state.selected_player_key = player_key(p)
             st.rerun()
 
-    st.markdown("### Top 30 Player Cards")
+    st.markdown("### Player Cards")
     cols = st.columns(5)
     for idx, p in enumerate(filtered[:30]):
         with cols[idx % 5]:
