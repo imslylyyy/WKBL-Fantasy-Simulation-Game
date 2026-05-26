@@ -4,6 +4,7 @@ import streamlit.components.v1 as components
 import csv
 import base64
 import mimetypes
+import math
 import re
 from pathlib import Path
 
@@ -14,6 +15,7 @@ st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide")
 # Required files in the same folder:
 #   app.py
 #   players_2024_25.csv
+#   game_results_2025_26.csv OR raw_game_results_2025_26.txt
 #   images/
 #
 # Run:
@@ -29,10 +31,30 @@ MAX_PRICE = 4.5
 BUDGET_CAP = 14.0
 PRICE_RANGE = MAX_PRICE - MIN_PRICE
 
+# Season price update rule
+# A player can move at most 50% of the whole price range over a full 30-game season.
+REGULAR_SEASON_GAMES_PER_TEAM = 30
+SEASON_PRICE_MOVE_RATIO = 0.50
+MAX_PRICE_CHANGE_PER_GAME = round(
+    SEASON_PRICE_MOVE_RATIO * PRICE_RANGE / REGULAR_SEASON_GAMES_PER_TEAM,
+    2,
+)  # 0.07억원
+PRICE_UPDATE_SIGMA = 10.0
+EXPECTED_SCORE_ALPHA = 0.20
+
 SIMULATION_TEAMS = ["KB스타즈", "하나은행", "삼성생명", "우리은행", "BNK썸", "신한은행"]
 
 CSV_PATH = Path("players_2024_25.csv")
 IMAGE_DIR = Path("images")
+GAME_RESULTS_PATH = Path("game_results_2025_26.csv")
+RAW_GAME_RESULTS_PATH = Path("raw_game_results_2025_26.txt")
+
+ROSTER_SIZE = 10
+ROSTER_BACK_COUNT = 5
+ROSTER_FRONT_COUNT = 5
+STARTERS_COUNT = 5
+MAX_PLAYERS_PER_WKBL_TEAM = 2
+FREE_TRANSFERS_PER_GAMEWEEK = 2
 
 COLUMNS = [
     "name", "team_2025_26", "position", "games", "minutes",
@@ -96,6 +118,26 @@ def clean(value):
     if value is None:
         return ""
     return str(value).strip()
+
+def canonical_team(team):
+    team = clean(team)
+    compact = team.replace(" ", "")
+    aliases = {
+        "BNK썸": "BNK썸",
+        "BNK": "BNK썸",
+        "KB스타즈": "KB스타즈",
+        "KBStars": "KB스타즈",
+        "KBSTARS": "KB스타즈",
+        "삼성생명": "삼성생명",
+        "삼성": "삼성생명",
+        "우리은행": "우리은행",
+        "우리": "우리은행",
+        "하나은행": "하나은행",
+        "하나": "하나은행",
+        "신한은행": "신한은행",
+        "신한": "신한은행",
+    }
+    return aliases.get(compact, compact or team)
 
 def get_any(row, names):
     """
@@ -162,7 +204,7 @@ def canonicalize_row(row):
     player = {}
 
     player["name"] = get_any(row, ["name", "선수", "player"])
-    player["team_2025_26"] = get_any(row, ["team_2025_26", "team", "소속구단", "팀"])
+    player["team_2025_26"] = canonical_team(get_any(row, ["team_2025_26", "team", "소속구단", "팀"]))
     player["position"] = get_any(row, ["position", "pos", "POS"])
 
     player["games"] = get_any(row, ["games", "G", "g", "출전경기"])
@@ -303,15 +345,56 @@ def fantasy_breakdown(player):
 def fantasy_score(player):
     return fantasy_breakdown(player)["score"]
 
+def price_change_from_performance(game_score, expected_score):
+    """
+    Smooth price movement based on performance over/under expectation.
+
+    Delta P = delta_max * tanh((S - E) / sigma)
+    - S: single-game fantasy score
+    - E: pre-game expected fantasy score
+    - delta_max: mathematically set one-game movement cap, 0.07억원
+    """
+    gap = float(game_score) - float(expected_score)
+    return MAX_PRICE_CHANGE_PER_GAME * math.tanh(gap / PRICE_UPDATE_SIGMA)
+
+def update_expected_score(previous_expected, game_score):
+    """
+    Exponential moving average:
+    next E = (1-alpha) * old E + alpha * current game score
+    """
+    return (1 - EXPECTED_SCORE_ALPHA) * float(previous_expected) + EXPECTED_SCORE_ALPHA * float(game_score)
+
+def update_player_price(current_price, game_score, expected_score, played=True):
+    """
+    Returns (new_price, price_change, new_expected_score).
+    If a player does not play, price and expectation stay unchanged.
+    """
+    current_price = float(current_price)
+    expected_score = float(expected_score)
+
+    if not played:
+        return round(current_price, 2), 0.0, round(expected_score, 2)
+
+    change = price_change_from_performance(game_score, expected_score)
+    new_price = max(MIN_PRICE, min(MAX_PRICE, current_price + change))
+    new_expected = update_expected_score(expected_score, game_score)
+    return round(new_price, 2), round(change, 4), round(new_expected, 2)
+
+def initialize_market_fields(player):
+    """Attach current price and expected score fields used by the simulation."""
+    player["current_price"] = player.get("initial_price", MIN_PRICE)
+    games = max(to_int(player.get("games", 0)), 1)
+    if player.get("previous_data", False):
+        player["expected_score"] = round(player.get("fantasy_score", 0.0) / games, 2)
+    else:
+        player["expected_score"] = 0.0
+    return player
+
 def normalize_position(pos):
     pos = clean(pos).upper()
-    if pos == "B":
+    if pos in ["B", "G", "GUARD", "BACK COURT", "BACKCOURT"]:
         return "Back Court"
-    if pos == "F":
-        return "Front Court"
-    if pos in ["BACK COURT", "BACKCOURT"]:
-        return "Back Court"
-    if pos in ["FRONT COURT", "FRONTCOURT"]:
+    if pos in ["F", "C", "FORWARD", "CENTER", "FRONT COURT", "FRONTCOURT"]:
         return "Front Court"
     return "Not Set"
 
@@ -359,6 +442,7 @@ def load_players():
         else:
             price = MIN_PRICE + PRICE_RANGE * (p["fantasy_score"] / max_score)
             p["initial_price"] = round(price, 2)
+        initialize_market_fields(p)
 
     players.sort(key=lambda x: (x["team_2025_26"], x["name"]))
     return players, encoding_used
@@ -377,6 +461,7 @@ def sample_players():
     max_score = max([p["fantasy_score"] for p in raw if p["previous_data"]] or [0])
     for p in raw:
         p["initial_price"] = MIN_PRICE if not p["previous_data"] else round(MIN_PRICE + PRICE_RANGE * (p["fantasy_score"] / max_score), 2)
+        initialize_market_fields(p)
     return raw
 
 players, csv_encoding = load_players()
@@ -743,7 +828,7 @@ def player_card(p, priority=None, captain=False):
     Uses components.html so the card is rendered as HTML,
     not printed as raw tag text.
     """
-    price = p.get("initial_price", MIN_PRICE)
+    price = p.get("current_price", p.get("initial_price", MIN_PRICE))
     team = p.get("team_2025_26", "")
     top_class = "card-top-pink" if team in ["BNK썸", "KB스타즈", "삼성생명"] else "card-top-blue"
     name_class = "name-pink" if team in ["BNK썸", "KB스타즈", "삼성생명"] else "name-blue"
@@ -934,9 +1019,9 @@ def header():
 def nav():
     items = ["Home", "My Team", "Players", "Simulation", "Help"]
     st.markdown('<div class="nav-wrap">', unsafe_allow_html=True)
-    cols = st.columns(len(items) + 1)
+    cols = st.columns(len(items))
 
-    for col, item in zip(cols[:-1], items):
+    for col, item in zip(cols, items):
         with col:
             if item == st.session_state.page:
                 st.markdown(f'<div class="active-tab">{item}</div>', unsafe_allow_html=True)
@@ -944,11 +1029,6 @@ def nav():
                 if st.button(item, key=f"topnav_{item}", use_container_width=True):
                     go_to(item)
                     st.rerun()
-
-    with cols[-1]:
-        if st.button("Sign out", key="topnav_signout", use_container_width=True):
-            go_to("Home")
-            st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -976,7 +1056,12 @@ def player_detail_panel(player):
 
     with c2:
         st.markdown(f"#### {player['name']} [{player['team_2025_26']}]")
-        st.markdown(f"**Position:** {player['position_label']}  \n**Initial Price:** {format_price(player['initial_price'])}")
+        current_price = player.get("current_price", player.get("initial_price", MIN_PRICE))
+        st.markdown(
+            f"**Position:** {player['position_label']}  \n"
+            f"**Initial Price:** {format_price(player['initial_price'])}  \n"
+            f"**Current Price:** {format_price(current_price)}"
+        )
 
         if not player["previous_data"]:
             st.info("전 시즌 기록이 없는 선수입니다. 초기 가격은 최저가 0.3억원으로 처리됩니다.")
@@ -1000,6 +1085,736 @@ def player_detail_panel(player):
             st.rerun()
 
 
+
+# =========================
+# Fantasy Game State / Simulation Helpers
+# =========================
+def player_lookup(players_list):
+    return {player_key(p): p for p in players_list}
+
+def initialize_fantasy_state(players_list):
+    if "market_state" not in st.session_state:
+        st.session_state.market_state = {}
+    for p in players_list:
+        k = player_key(p)
+        if k not in st.session_state.market_state:
+            st.session_state.market_state[k] = {
+                "current_price": float(p.get("initial_price", MIN_PRICE)),
+                "expected_score": float(p.get("expected_score", 0.0)),
+                "last_change": 0.0,
+                "games_played_2025_26": 0,
+            }
+
+    defaults = {
+        "user_roster_keys": [],
+        "user_starting_keys": [],
+        "user_captain_key": None,
+        "user_formation": "2 Back Court / 3 Front Court",
+        "user_transfers": 0,
+        "chip_captain_active": False,
+        "chip_wildcard_available": True,
+        "chip_wildcard_active": False,
+        "chip_allstar_available": True,
+        "chip_allstar_active": False,
+        "simulation_game_index": 0,
+        "simulation_history": [],
+        "simulation_team_scores": {team: 0.0 for team in SIMULATION_TEAMS},
+        "simulation_team_rosters": {},
+        "simulation_team_starting": {},
+        "simulation_team_captains": {},
+        "simulation_ai_ready": False,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+def apply_market_state(players_list):
+    for p in players_list:
+        k = player_key(p)
+        state = st.session_state.market_state.get(k)
+        if state:
+            p["current_price"] = round(float(state.get("current_price", p.get("initial_price", MIN_PRICE))), 2)
+            p["expected_score"] = round(float(state.get("expected_score", p.get("expected_score", 0.0))), 2)
+            p["last_price_change"] = round(float(state.get("last_change", 0.0)), 4)
+
+def reset_market_state(players_list):
+    st.session_state.market_state = {}
+    for p in players_list:
+        k = player_key(p)
+        st.session_state.market_state[k] = {
+            "current_price": float(p.get("initial_price", MIN_PRICE)),
+            "expected_score": float(p.get("fantasy_score", 0.0)) / max(to_int(p.get("games", 0)), 1) if p.get("previous_data") else 0.0,
+            "last_change": 0.0,
+            "games_played_2025_26": 0,
+        }
+    apply_market_state(players_list)
+
+def price_of_key(key, players_list):
+    p = player_lookup(players_list).get(key)
+    if not p:
+        return MIN_PRICE
+    return float(p.get("current_price", p.get("initial_price", MIN_PRICE)))
+
+def position_of_key(key, players_list):
+    p = player_lookup(players_list).get(key)
+    return p.get("position_label", "Not Set") if p else "Not Set"
+
+def team_of_key(key, players_list):
+    p = player_lookup(players_list).get(key)
+    return p.get("team_2025_26", "") if p else ""
+
+def label_for_key(key, players_list):
+    p = player_lookup(players_list).get(key)
+    if not p:
+        return key
+    price = p.get("current_price", p.get("initial_price", MIN_PRICE))
+    data = "record" if p.get("previous_data") else "no prev."
+    return f'{p["name"]} | {p["team_2025_26"]} | {p["position_label"]} | {format_price(price)} | {data}'
+
+def keys_to_players(keys, players_list):
+    lookup = player_lookup(players_list)
+    return [lookup[k] for k in keys if k in lookup]
+
+def formation_requirements(formation):
+    if str(formation).startswith("3 Back"):
+        return 3, 2
+    return 2, 3
+
+def roster_report(keys, players_list):
+    selected = keys_to_players(keys, players_list)
+    total_price = sum(float(p.get("current_price", p.get("initial_price", MIN_PRICE))) for p in selected)
+    back_count = sum(1 for p in selected if p.get("position_label") == "Back Court")
+    front_count = sum(1 for p in selected if p.get("position_label") == "Front Court")
+    team_counts = {}
+    for p in selected:
+        team_counts[p["team_2025_26"]] = team_counts.get(p["team_2025_26"], 0) + 1
+
+    errors = []
+    if len(selected) != ROSTER_SIZE:
+        errors.append(f"로스터는 정확히 {ROSTER_SIZE}명이어야 합니다.")
+    if back_count != ROSTER_BACK_COUNT:
+        errors.append(f"Back Court는 정확히 {ROSTER_BACK_COUNT}명이어야 합니다.")
+    if front_count != ROSTER_FRONT_COUNT:
+        errors.append(f"Front Court는 정확히 {ROSTER_FRONT_COUNT}명이어야 합니다.")
+    if total_price > BUDGET_CAP + 1e-9:
+        errors.append(f"예산 초과: {format_price(total_price)} / {format_price(BUDGET_CAP)}")
+    over_teams = [team for team, count in team_counts.items() if count > MAX_PLAYERS_PER_WKBL_TEAM]
+    if over_teams:
+        errors.append("한 WKBL 팀에서 최대 2명까지만 선택할 수 있습니다: " + ", ".join(over_teams))
+
+    return {
+        "players": selected,
+        "total_price": round(total_price, 2),
+        "back_count": back_count,
+        "front_count": front_count,
+        "team_counts": team_counts,
+        "errors": errors,
+        "valid": len(errors) == 0,
+    }
+
+def count_transfers(old_keys, new_keys):
+    old_set = set(old_keys)
+    new_set = set(new_keys)
+    return len(new_set - old_set)
+
+def player_value_score(p, seed=0):
+    expected = float(p.get("expected_score", 0.0))
+    cumulative = float(p.get("fantasy_score", 0.0))
+    games = max(to_int(p.get("games", 0)), 1)
+    per_game = expected if expected > 0 else cumulative / games
+    price = max(float(p.get("current_price", p.get("initial_price", MIN_PRICE))), MIN_PRICE)
+    jitter = ((hash(player_key(p) + str(seed)) % 1000) / 1000) * 0.03
+    return per_game / price + jitter
+
+def generate_auto_roster(players_list, seed=0):
+    candidates = [p for p in players_list if p.get("position_label") in ["Back Court", "Front Court"]]
+    selected = []
+    selected_keys = set()
+    team_counts = {}
+
+    def can_add(p):
+        if player_key(p) in selected_keys:
+            return False
+        if team_counts.get(p["team_2025_26"], 0) >= MAX_PLAYERS_PER_WKBL_TEAM:
+            return False
+        return True
+
+    # Start from efficient, low-risk players, then upgrade within cap.
+    for pos, needed in [("Back Court", ROSTER_BACK_COUNT), ("Front Court", ROSTER_FRONT_COUNT)]:
+        pool = [p for p in candidates if p.get("position_label") == pos]
+        pool = sorted(pool, key=lambda p: (-player_value_score(p, seed), float(p.get("current_price", p.get("initial_price", MIN_PRICE)))))
+        for p in pool:
+            if sum(1 for x in selected if x.get("position_label") == pos) >= needed:
+                break
+            if can_add(p):
+                selected.append(p)
+                selected_keys.add(player_key(p))
+                team_counts[p["team_2025_26"]] = team_counts.get(p["team_2025_26"], 0) + 1
+
+    # If over budget, replace the lowest value expensive players with cheaper same-position players.
+    def total_price():
+        return sum(float(p.get("current_price", p.get("initial_price", MIN_PRICE))) for p in selected)
+
+    safety = 0
+    while total_price() > BUDGET_CAP and safety < 200:
+        safety += 1
+        selected_sorted = sorted(selected, key=lambda p: (player_value_score(p, seed), -float(p.get("current_price", p.get("initial_price", MIN_PRICE)))))
+        replaced = False
+        for out_p in selected_sorted:
+            out_pos = out_p.get("position_label")
+            out_key = player_key(out_p)
+            team_counts[out_p["team_2025_26"]] -= 1
+            selected_keys.remove(out_key)
+            pool = [
+                p for p in candidates
+                if p.get("position_label") == out_pos
+                and player_key(p) not in selected_keys
+                and team_counts.get(p["team_2025_26"], 0) < MAX_PLAYERS_PER_WKBL_TEAM
+                and float(p.get("current_price", p.get("initial_price", MIN_PRICE))) < float(out_p.get("current_price", out_p.get("initial_price", MIN_PRICE)))
+            ]
+            pool = sorted(pool, key=lambda p: (float(p.get("current_price", p.get("initial_price", MIN_PRICE))), -player_value_score(p, seed)))
+            if pool:
+                in_p = pool[0]
+                selected.remove(out_p)
+                selected.append(in_p)
+                selected_keys.add(player_key(in_p))
+                team_counts[in_p["team_2025_26"]] = team_counts.get(in_p["team_2025_26"], 0) + 1
+                replaced = True
+                break
+            selected_keys.add(out_key)
+            team_counts[out_p["team_2025_26"]] = team_counts.get(out_p["team_2025_26"], 0) + 1
+        if not replaced:
+            break
+
+    report = roster_report([player_key(p) for p in selected], players_list)
+    if report["valid"]:
+        return [player_key(p) for p in selected]
+
+    # Fallback: cheapest legal roster.
+    selected = []
+    selected_keys = set()
+    team_counts = {}
+    for pos, needed in [("Back Court", ROSTER_BACK_COUNT), ("Front Court", ROSTER_FRONT_COUNT)]:
+        pool = sorted([p for p in candidates if p.get("position_label") == pos], key=lambda p: float(p.get("current_price", p.get("initial_price", MIN_PRICE))))
+        for p in pool:
+            if sum(1 for x in selected if x.get("position_label") == pos) >= needed:
+                break
+            if player_key(p) not in selected_keys and team_counts.get(p["team_2025_26"], 0) < MAX_PLAYERS_PER_WKBL_TEAM:
+                selected.append(p)
+                selected_keys.add(player_key(p))
+                team_counts[p["team_2025_26"]] = team_counts.get(p["team_2025_26"], 0) + 1
+    return [player_key(p) for p in selected]
+
+def auto_starting_keys(roster_keys, players_list, formation):
+    lookup = player_lookup(players_list)
+    req_b, req_f = formation_requirements(formation)
+    roster_players = [lookup[k] for k in roster_keys if k in lookup]
+    backs = sorted([p for p in roster_players if p.get("position_label") == "Back Court"], key=lambda p: player_value_score(p), reverse=True)
+    fronts = sorted([p for p in roster_players if p.get("position_label") == "Front Court"], key=lambda p: player_value_score(p), reverse=True)
+    return [player_key(p) for p in backs[:req_b] + fronts[:req_f]]
+
+def validate_starting(starting_keys, roster_keys, players_list, formation):
+    req_b, req_f = formation_requirements(formation)
+    selected = keys_to_players(starting_keys, players_list)
+    errors = []
+    if len(selected) != STARTERS_COUNT:
+        errors.append(f"Starting 5는 정확히 {STARTERS_COUNT}명이어야 합니다.")
+    if not set(starting_keys).issubset(set(roster_keys)):
+        errors.append("Starting 5는 반드시 내 로스터 안에서만 선택해야 합니다.")
+    back_count = sum(1 for p in selected if p.get("position_label") == "Back Court")
+    front_count = sum(1 for p in selected if p.get("position_label") == "Front Court")
+    if back_count != req_b or front_count != req_f:
+        errors.append(f"현재 포메이션은 Back Court {req_b}명, Front Court {req_f}명이 필요합니다.")
+    return {"valid": len(errors) == 0, "errors": errors, "back_count": back_count, "front_count": front_count}
+
+def parse_game_date(value):
+    value = clean(value)
+    if not value:
+        return ""
+    value = re.sub(r"\([^)]*\)", "", value).strip()
+    value = value.replace(".", "-").replace("/", "-")
+    parts = value.split("-")
+    if len(parts) == 3:
+        y, m, d = parts
+        if len(y) == 2:
+            y = "20" + y
+        return f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
+    if len(parts) == 2:
+        m, d = parts
+        year = 2025 if int(m) >= 11 else 2026
+        return f"{year:04d}-{int(m):02d}-{int(d):02d}"
+    return value
+
+def canonicalize_game_row(row):
+    p = canonicalize_row(row)
+    p["name"] = get_any(row, ["player", "name", "선수"])
+    p["team_2025_26"] = canonical_team(get_any(row, ["team", "team_2025_26", "팀", "소속구단"]))
+    p["position_label"] = normalize_position(p.get("position", ""))
+    p["position_short"] = position_short(p.get("position", ""))
+    p["date"] = parse_game_date(get_any(row, ["date", "game_date", "날짜", "일자"]))
+    p["time"] = get_any(row, ["time", "game_time", "시간"])
+    p["gameweek"] = get_any(row, ["gameweek", "gw", "Gameweek", "GAMEWEEK"])
+    p["day"] = get_any(row, ["day", "gameday", "Day", "DAY"])
+    p["game_id"] = get_any(row, ["game_id", "game", "match_id", "경기ID"])
+    p["home_team"] = canonical_team(get_any(row, ["home_team", "home", "홈팀"]))
+    p["away_team"] = canonical_team(get_any(row, ["away_team", "away", "원정팀"]))
+    p["home_score"] = get_any(row, ["home_score", "홈점수"])
+    p["away_score"] = get_any(row, ["away_score", "원정점수"])
+    p["venue"] = get_any(row, ["venue", "경기장"])
+    return p
+
+
+GAME_RESULT_FIELDNAMES = [
+    "game_id", "date", "time", "gameweek", "day", "home_team", "away_team", "home_score", "away_score", "venue",
+    "player", "team", "pos", "min", "2pmade", "2pa", "3pmade", "3pa", "ftm", "fta", "oreb", "dreb", "ast", "stl", "blk", "to", "pts"
+]
+
+RAW_PLAYER_ROW_RE = re.compile(
+    r"^(.+?)\s+([GFC])\s+"
+    r"(\d{1,3}:\d{1,2})\s+"
+    r"(\d+\s*-\s*\d+)\s+"
+    r"(\d+\s*-\s*\d+)\s+"
+    r"(\d+\s*-\s*\d+)\s+"
+    r"(\d+)\s+(\d+)\s+(\d+)\s+"
+    r"(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$"
+)
+
+RAW_TEAM_TOTAL_RE = re.compile(
+    r"^팀합계\s+(\d{1,3}:\d{2})\s+"
+    r"(\d+\s*-\s*\d+)\s+"
+    r"(\d+\s*-\s*\d+)\s+"
+    r"(\d+\s*-\s*\d+)\s+"
+    r"(\d+)\s+(\d+)\s+(\d+)\s+"
+    r"(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$"
+)
+
+def split_pair(raw_pair):
+    raw_pair = clean(raw_pair).replace(" ", "")
+    if "-" not in raw_pair:
+        return "0", "0"
+    a, b = raw_pair.split("-", 1)
+    return clean(a), clean(b)
+
+def raw_line_team_candidate(line):
+    """Return a canonical team if a raw line is exactly, or ends with, a WKBL team name."""
+    raw = clean(line)
+    compact = raw.replace(" ", "")
+    for team in SIMULATION_TEAMS:
+        t = team.replace(" ", "")
+        if compact == t or compact.endswith(t):
+            return team
+    return ""
+
+def normalize_raw_results_text(raw_text):
+    raw_text = raw_text.replace("\r", "\n").replace("\t", "\n")
+    # Sometimes a date is glued to the previous numeric value, e.g. ...0 11/17(월).
+    raw_text = re.sub(r"(?<!\n)(?=(?:1[0-2]|[1-9])/\d{1,2}\([^)]*\))", "\n", raw_text)
+    # Put likely team-table starts on their own line when they are glued to venue/time text.
+    for team in ["BNK 썸", "BNK썸", "신한은행", "하나은행", "우리은행", "삼성생명", "KB스타즈"]:
+        raw_text = re.sub(rf"(?<!\n)({re.escape(team)})\s*\n\s*선수", rf"\n\1\n선수", raw_text)
+    return raw_text
+
+def parse_raw_game_results_text(raw_text):
+    """
+    Parse the copied WKBL box-score text into app-ready game-result rows.
+
+    Expected row pattern:
+    선수 POS MIN 2PM-A 3PM-A FTM-A OFF DEF TOT AST PF ST TO BS PTS
+    Team total rows are used only to infer the final score.
+    """
+    raw_text = normalize_raw_results_text(raw_text)
+    pieces = re.split(r"(?m)^\s*((?:1[0-2]|[1-9])/\d{1,2}\([^)]*\))\s*", raw_text)
+    parsed_rows = []
+    game_id = 1
+    seen_game_signatures = set()
+
+    # pieces[0] is text before the first date marker.
+    for i in range(1, len(pieces), 2):
+        date_token = pieces[i]
+        block = pieces[i + 1] if i + 1 < len(pieces) else ""
+        date = parse_game_date(date_token)
+        lines = [clean(x) for x in block.split("\n") if clean(x)]
+        if not lines:
+            continue
+
+        # Extract game time only from the pre-table area, not player minutes.
+        first_player_header = next((idx for idx, line in enumerate(lines) if "선수" in line and "POS" in line.upper()), len(lines))
+        header_text = " ".join(lines[:first_player_header])
+        times = re.findall(r"\b\d{1,2}:\d{2}\b", header_text)
+        game_time = times[-1] if times else ""
+
+        team_blocks = []
+        current = None
+        active = False
+
+        for idx, line in enumerate(lines):
+            next_lines = " ".join(lines[idx + 1:idx + 4])
+            team_candidate = raw_line_team_candidate(line)
+            if team_candidate and "선수" in next_lines and "POS" in next_lines.upper():
+                current = {"team": canonical_team(team_candidate), "rows": [], "score": ""}
+                team_blocks.append(current)
+                active = True
+                continue
+
+            if not active or current is None:
+                continue
+            if line.startswith("선수") or line in ["OFF", "DEF", "TOT"] or line == "OFF DEF TOT":
+                continue
+
+            total_match = RAW_TEAM_TOTAL_RE.match(line)
+            if total_match:
+                current["score"] = total_match.group(13)
+                continue
+
+            row_match = RAW_PLAYER_ROW_RE.match(line)
+            if not row_match:
+                continue
+
+            name, pos, minute, two_pair, three_pair, ft_pair, off, deff, tot, ast, pf, st, to, bs, pts = row_match.groups()
+            two_m, two_a = split_pair(two_pair)
+            three_m, three_a = split_pair(three_pair)
+            ft_m, ft_a = split_pair(ft_pair)
+            current["rows"].append({
+                "player": clean(name),
+                "team": current["team"],
+                "pos": clean(pos),
+                "min": clean(minute),
+                "2pmade": two_m,
+                "2pa": two_a,
+                "3pmade": three_m,
+                "3pa": three_a,
+                "ftm": ft_m,
+                "fta": ft_a,
+                "oreb": off,
+                "dreb": deff,
+                "ast": ast,
+                "stl": st,
+                "blk": bs,
+                "to": to,
+                "pts": pts,
+            })
+
+        # Pair team tables into games. Usually each date block has exactly two team tables.
+        for pair_start in range(0, len(team_blocks) - 1, 2):
+            home = team_blocks[pair_start]
+            away = team_blocks[pair_start + 1]
+            if not home["rows"] or not away["rows"]:
+                continue
+
+            signature = (
+                date,
+                home["team"], away["team"],
+                home.get("score", ""), away.get("score", ""),
+                tuple((r["player"], r["pts"], r["min"]) for r in home["rows"]),
+                tuple((r["player"], r["pts"], r["min"]) for r in away["rows"]),
+            )
+            if signature in seen_game_signatures:
+                continue
+            seen_game_signatures.add(signature)
+
+            for source in [home, away]:
+                for player_row in source["rows"]:
+                    parsed_rows.append({
+                        "game_id": str(game_id),
+                        "date": date,
+                        "time": game_time,
+                        "gameweek": "",
+                        "day": "",
+                        "home_team": home["team"],
+                        "away_team": away["team"],
+                        "home_score": home.get("score", ""),
+                        "away_score": away.get("score", ""),
+                        "venue": "",
+                        **player_row,
+                    })
+            game_id += 1
+
+    return parsed_rows
+
+def read_raw_game_results_if_available():
+    if not RAW_GAME_RESULTS_PATH.exists():
+        return []
+    for enc in ["utf-8-sig", "utf-8", "cp949"]:
+        try:
+            raw_text = RAW_GAME_RESULTS_PATH.read_text(encoding=enc)
+            return parse_raw_game_results_text(raw_text)
+        except UnicodeDecodeError:
+            continue
+    return []
+
+def game_rows_to_csv_text(rows):
+    from io import StringIO
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=GAME_RESULT_FIELDNAMES, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+    return output.getvalue()
+
+def load_game_results():
+    if GAME_RESULTS_PATH.exists():
+        rows, encoding_used = read_csv_with_fallback(GAME_RESULTS_PATH)
+    else:
+        rows = read_raw_game_results_if_available()
+        encoding_used = "raw_game_results_2025_26.txt" if rows else None
+        if not rows:
+            return [], [], None
+
+    parsed = []
+    for idx, row in enumerate(rows):
+        p = canonicalize_game_row(row)
+        if not p["name"] or p["name"] == "팀합계":
+            continue
+        if not p["team_2025_26"]:
+            continue
+        if not p["game_id"]:
+            base = "__".join([p.get("date", ""), p.get("time", ""), p.get("home_team", ""), p.get("away_team", "")]).strip("_")
+            p["game_id"] = base if base else f"game_{idx+1}"
+        p["row_order"] = idx
+        p["game_score"] = fantasy_score(p)
+        parsed.append(p)
+
+    # Sort and infer gameweek/day if not supplied.
+    parsed.sort(key=lambda r: (r.get("date", ""), r.get("time", ""), str(r.get("game_id", "")), r.get("row_order", 0)))
+
+    game_order = []
+    groups = {}
+    for r in parsed:
+        gid = str(r["game_id"])
+        if gid not in groups:
+            groups[gid] = {
+                "game_id": gid,
+                "date": r.get("date", ""),
+                "time": r.get("time", ""),
+                "gameweek": r.get("gameweek", ""),
+                "day": r.get("day", ""),
+                "home_team": r.get("home_team", ""),
+                "away_team": r.get("away_team", ""),
+                "home_score": r.get("home_score", ""),
+                "away_score": r.get("away_score", ""),
+                "venue": r.get("venue", ""),
+                "rows": [],
+            }
+            game_order.append(gid)
+        groups[gid]["rows"].append(r)
+        for field in ["date", "time", "gameweek", "day", "home_team", "away_team", "home_score", "away_score", "venue"]:
+            if not groups[gid].get(field) and r.get(field):
+                groups[gid][field] = r.get(field)
+
+    games = [groups[gid] for gid in game_order]
+
+    dates = sorted({g["date"] for g in games if g.get("date")})
+    first_date = dates[0] if dates else ""
+    date_to_week = {}
+    date_to_day = {}
+    if first_date:
+        from datetime import datetime
+        first = datetime.strptime(first_date, "%Y-%m-%d")
+        grouped_dates = {}
+        for d in dates:
+            cur = datetime.strptime(d, "%Y-%m-%d")
+            week = (cur - first).days // 7 + 1
+            grouped_dates.setdefault(week, []).append(d)
+            date_to_week[d] = week
+        for week, ds in grouped_dates.items():
+            for i, d in enumerate(sorted(ds), start=1):
+                date_to_day[d] = i
+
+    for i, g in enumerate(games, start=1):
+        if not g.get("gameweek"):
+            g["gameweek"] = date_to_week.get(g.get("date"), i)
+        else:
+            g["gameweek"] = to_int(g.get("gameweek"), i)
+        if not g.get("day"):
+            g["day"] = date_to_day.get(g.get("date"), 1)
+        else:
+            g["day"] = to_int(g.get("day"), 1)
+
+    return parsed, games, encoding_used
+
+def reset_simulation_runtime(players_list):
+    reset_market_state(players_list)
+    st.session_state.simulation_game_index = 0
+    st.session_state.simulation_history = []
+    st.session_state.simulation_team_scores = {team: 0.0 for team in SIMULATION_TEAMS}
+    st.session_state.simulation_team_rosters = {}
+    st.session_state.simulation_team_starting = {}
+    st.session_state.simulation_team_captains = {}
+    st.session_state.user_transfers = 0
+    st.session_state.chip_captain_active = False
+    st.session_state.chip_wildcard_active = False
+    st.session_state.chip_wildcard_available = True
+    st.session_state.chip_allstar_active = False
+    st.session_state.chip_allstar_available = True
+    st.session_state.simulation_ai_ready = False
+
+def initialize_ai_managers(players_list):
+    user_team = st.session_state.simulation_user_team
+    for idx, team in enumerate(SIMULATION_TEAMS):
+        if team == user_team:
+            roster = st.session_state.user_roster_keys
+            formation = st.session_state.user_formation
+            starting = st.session_state.user_starting_keys or auto_starting_keys(roster, players_list, formation)
+            captain = st.session_state.user_captain_key or (starting[0] if starting else None)
+        else:
+            roster = generate_auto_roster(players_list, seed=idx + 17)
+            formation = "2 Back Court / 3 Front Court"
+            starting = auto_starting_keys(roster, players_list, formation)
+            captain = starting[0] if starting else None
+        st.session_state.simulation_team_rosters[team] = roster
+        st.session_state.simulation_team_starting[team] = starting
+        st.session_state.simulation_team_captains[team] = captain
+    st.session_state.simulation_ai_ready = True
+
+def sync_user_lineup_to_simulation():
+    team = st.session_state.simulation_user_team
+    if team:
+        st.session_state.simulation_team_rosters[team] = list(st.session_state.user_roster_keys)
+        st.session_state.simulation_team_starting[team] = list(st.session_state.user_starting_keys)
+        st.session_state.simulation_team_captains[team] = st.session_state.user_captain_key
+
+def start_simulation(user_team):
+    st.session_state.simulation_user_team = user_team
+    st.session_state.simulation_game_no = 1
+    st.session_state.simulation_started = True
+    st.session_state.simulation_league = [
+        {
+            "Rank": 1,
+            "Team": team,
+            "Manager": "You" if team == user_team else "AI",
+            "Points": 0.0,
+            "Transfers": 0,
+            "Budget": format_price(BUDGET_CAP),
+        }
+        for team in SIMULATION_TEAMS
+    ]
+
+def update_league_table_from_scores():
+    league = []
+    for team in SIMULATION_TEAMS:
+        league.append({
+            "Rank": 1,
+            "Team": team,
+            "Manager": "You" if team == st.session_state.simulation_user_team else "AI",
+            "Points": round(float(st.session_state.simulation_team_scores.get(team, 0.0)), 2),
+            "Transfers": st.session_state.user_transfers if team == st.session_state.simulation_user_team else 0,
+            "Budget": format_price(BUDGET_CAP),
+        })
+    st.session_state.simulation_league = league
+
+def process_one_game(game, players_list):
+    if not st.session_state.simulation_ai_ready:
+        initialize_ai_managers(players_list)
+    sync_user_lineup_to_simulation()
+
+    lookup = player_lookup(players_list)
+    row_scores = {}
+    price_changes = []
+    played_keys = set()
+
+    for row in game["rows"]:
+        k = player_key(row)
+        played_keys.add(k)
+        score = float(row.get("game_score", fantasy_score(row)))
+        row_scores[k] = score
+        state = st.session_state.market_state.get(k)
+        if state is None:
+            # New or unmatched player from the game file.
+            state = {
+                "current_price": MIN_PRICE,
+                "expected_score": 0.0,
+                "last_change": 0.0,
+                "games_played_2025_26": 0,
+            }
+            st.session_state.market_state[k] = state
+
+        old_price = float(state.get("current_price", MIN_PRICE))
+        expected = float(state.get("expected_score", 0.0))
+        new_price, change, new_expected = update_player_price(old_price, score, expected, played=True)
+        state["current_price"] = new_price
+        state["expected_score"] = new_expected
+        state["last_change"] = change
+        state["games_played_2025_26"] = int(state.get("games_played_2025_26", 0)) + 1
+
+        display_name = row.get("name", k)
+        display_team = row.get("team_2025_26", "")
+        if k in lookup:
+            display_name = lookup[k].get("name", display_name)
+            display_team = lookup[k].get("team_2025_26", display_team)
+        price_changes.append({
+            "Player": display_name,
+            "Team": display_team,
+            "Game Score": round(score, 2),
+            "Old Price": format_price(old_price),
+            "Change": f'{change:+.2f}억원',
+            "New Price": format_price(new_price),
+        })
+
+    game_team_points = {}
+    for fantasy_team in SIMULATION_TEAMS:
+        starting = st.session_state.simulation_team_starting.get(fantasy_team, [])
+        captain = st.session_state.simulation_team_captains.get(fantasy_team)
+        base_points = 0.0
+        for k in starting:
+            base_points += row_scores.get(k, 0.0)
+
+        bonus_points = 0.0
+        if fantasy_team == st.session_state.simulation_user_team:
+            if st.session_state.chip_captain_active and captain:
+                bonus_points += row_scores.get(captain, 0.0)
+            if st.session_state.chip_allstar_active:
+                bonus_points += base_points * 0.20
+
+        total = base_points + bonus_points
+        st.session_state.simulation_team_scores[fantasy_team] = round(
+            float(st.session_state.simulation_team_scores.get(fantasy_team, 0.0)) + total,
+            2,
+        )
+        game_team_points[fantasy_team] = round(total, 2)
+
+    st.session_state.chip_captain_active = False
+    if st.session_state.chip_allstar_active:
+        st.session_state.chip_allstar_active = False
+
+    st.session_state.simulation_history.append({
+        "game_id": game.get("game_id", ""),
+        "date": game.get("date", ""),
+        "time": game.get("time", ""),
+        "gameweek": game.get("gameweek", ""),
+        "day": game.get("day", ""),
+        "match": f'{game.get("home_team", "")} {game.get("home_score", "")} vs {game.get("away_team", "")} {game.get("away_score", "")}',
+        "team_points": game_team_points,
+        "price_changes": sorted(price_changes, key=lambda x: abs(float(x["Change"].replace("억원",""))), reverse=True)[:10],
+    })
+
+    st.session_state.simulation_game_index += 1
+    st.session_state.simulation_game_no = st.session_state.simulation_game_index + 1
+    update_league_table_from_scores()
+    apply_market_state(players_list)
+
+def process_next_gameweek(games, players_list):
+    idx = st.session_state.simulation_game_index
+    if idx >= len(games):
+        return
+    gw = games[idx].get("gameweek")
+    while st.session_state.simulation_game_index < len(games) and games[st.session_state.simulation_game_index].get("gameweek") == gw:
+        process_one_game(games[st.session_state.simulation_game_index], players_list)
+
+def game_results_template():
+    return (
+        "game_id,date,time,gameweek,day,home_team,away_team,home_score,away_score,venue,"
+        "player,team,pos,min,2pmade,2pa,3pmade,3pa,ftm,fta,oreb,dreb,ast,stl,blk,to,pts\n"
+        "1,2025-11-16,14:25,1,1,BNK썸,신한은행,65,54,부산사직실내체육관,"
+        "안혜지,BNK썸,G,35:02,5,10,0,1,0,0,0,1,5,0,0,2,10\n"
+        "1,2025-11-16,14:25,1,1,BNK썸,신한은행,65,54,부산사직실내체육관,"
+        "신이슬,신한은행,G,40:00,3,5,3,6,2,2,0,2,1,2,1,3,17"
+    )
+
+initialize_fantasy_state(players)
+apply_market_state(players)
+game_rows_2025_26, games_2025_26, game_csv_encoding = load_game_results()
+game_csv_loaded = len(games_2025_26) > 0
+
 # =========================
 # Sidebar
 # =========================
@@ -1010,7 +1825,27 @@ with st.sidebar:
     if csv_loaded:
         st.success(f"players_2024_25.csv loaded ({csv_encoding})")
     else:
-        st.warning("CSV not found. Showing sample data.")
+        st.warning("players_2024_25.csv not found. Showing sample data.")
+
+    if game_csv_loaded:
+        if game_csv_encoding == "raw_game_results_2025_26.txt":
+            st.success("raw_game_results_2025_26.txt parsed and connected")
+            st.caption(f"Games: {len(games_2025_26)} / Player rows: {len(game_rows_2025_26)}")
+            raw_rows_for_download = read_raw_game_results_if_available()
+            if raw_rows_for_download:
+                st.download_button(
+                    "Download converted game_results_2025_26.csv",
+                    data=game_rows_to_csv_text(raw_rows_for_download),
+                    file_name="game_results_2025_26.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+        else:
+            st.success(f"game_results_2025_26.csv loaded ({game_csv_encoding})")
+            st.caption(f"Games: {len(games_2025_26)} / Player rows: {len(game_rows_2025_26)}")
+    else:
+        st.info("game_results_2025_26.csv not connected yet. You can also upload raw_game_results_2025_26.txt.")
+
     st.caption("시간 기준: KST")
     st.caption("Prototype version")
 
@@ -1073,70 +1908,209 @@ if page == "Home":
 elif page == "My Team":
     st.markdown("You are logged in as <b style='color:#E91E73;'>Chaeyoung Song</b>.", unsafe_allow_html=True)
 
+    user_team = st.session_state.simulation_user_team or "Not selected"
+    total_points = 0.0
+    if st.session_state.simulation_user_team:
+        total_points = st.session_state.simulation_team_scores.get(st.session_state.simulation_user_team, 0.0)
+
+    next_label = "No game file"
+    if game_csv_loaded:
+        idx = min(st.session_state.simulation_game_index, len(games_2025_26) - 1)
+        g = games_2025_26[idx]
+        next_label = f'{g.get("gameweek")} - Day {g.get("day")}'
+
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
-        summary_card("GAMEWEEK", "1 - Day 1", "📅")
+        summary_card("GAMEWEEK", next_label, "📅")
     with c2:
-        summary_card("NEXT DEADLINE", "18:30", "⏰", "KST")
+        summary_card("NEXT DEADLINE", "30 min before", "⏰", "KST")
     with c3:
-        summary_card("FREE TRANSFERS", "2", "🔁")
+        remaining_free = max(FREE_TRANSFERS_PER_GAMEWEEK - st.session_state.user_transfers, 0)
+        summary_card("FREE TRANSFERS", remaining_free, "🔁")
     with c4:
-        summary_card("TOTAL POINTS", "0", "⭐")
+        summary_card("TOTAL POINTS", f"{total_points:.2f}", "⭐")
     with c5:
-        summary_card("OVERALL RANK", "-", "📊")
+        summary_card("MY MANAGER TEAM", user_team, "📊")
 
     left, right = st.columns([4, 1.15])
-
-    sorted_by_price = sorted(players, key=lambda p: p["initial_price"], reverse=True)
-    demo_roster = sorted_by_price[:10] if len(sorted_by_price) >= 10 else sorted_by_price
-    starters = demo_roster[:5]
-    bench = demo_roster[5:10]
-    captain_key = f'{starters[0]["name"]}_{starters[0]["team_2025_26"]}' if starters else ""
+    all_keys = [player_key(p) for p in sorted(players, key=lambda p: p.get("current_price", p.get("initial_price", MIN_PRICE)), reverse=True)]
 
     with left:
+        st.markdown('<div class="section-title">BUILD YOUR ROSTER</div>', unsafe_allow_html=True)
+        st.caption("조건: 총 10명, Back Court 5명 + Front Court 5명, 예산 14억원, 같은 WKBL 팀 최대 2명.")
+
+        if st.button("Auto-generate valid roster", use_container_width=True):
+            st.session_state.user_roster_keys = generate_auto_roster(players, seed=99)
+            st.session_state.user_starting_keys = auto_starting_keys(st.session_state.user_roster_keys, players, st.session_state.user_formation)
+            if st.session_state.user_starting_keys:
+                st.session_state.user_captain_key = st.session_state.user_starting_keys[0]
+            sync_user_lineup_to_simulation()
+            st.rerun()
+
+        selected_keys = st.multiselect(
+            "Select 10 players",
+            options=all_keys,
+            default=[k for k in st.session_state.user_roster_keys if k in all_keys],
+            format_func=lambda k: label_for_key(k, players),
+            placeholder="선수 10명을 선택하세요.",
+        )
+
+        report = roster_report(selected_keys, players)
+        s1, s2, s3, s4 = st.columns(4)
+        with s1:
+            summary_card("SELECTED", f'{len(report["players"])}/10', "👥")
+        with s2:
+            summary_card("BUDGET USED", format_price(report["total_price"]), "💰")
+        with s3:
+            summary_card("BACK COURT", f'{report["back_count"]}/5', "B")
+        with s4:
+            summary_card("FRONT COURT", f'{report["front_count"]}/5', "F")
+
+        if report["errors"]:
+            for err in report["errors"]:
+                st.error(err)
+        else:
+            st.success("저장 가능한 로스터입니다.")
+
+        if st.button("Save Roster", use_container_width=True, disabled=not report["valid"]):
+            old_roster = list(st.session_state.user_roster_keys)
+            if st.session_state.simulation_started and not st.session_state.chip_wildcard_active:
+                st.session_state.user_transfers += count_transfers(old_roster, selected_keys)
+            st.session_state.user_roster_keys = list(selected_keys)
+            st.session_state.user_starting_keys = auto_starting_keys(st.session_state.user_roster_keys, players, st.session_state.user_formation)
+            if st.session_state.user_captain_key not in st.session_state.user_starting_keys:
+                st.session_state.user_captain_key = st.session_state.user_starting_keys[0] if st.session_state.user_starting_keys else None
+            if st.session_state.chip_wildcard_active:
+                st.session_state.chip_wildcard_active = False
+            sync_user_lineup_to_simulation()
+            st.success("Roster saved.")
+            st.rerun()
+
+        st.write("")
         st.markdown('<div class="section-title">SET YOUR LINE-UP</div>', unsafe_allow_html=True)
-        formation = st.radio("Formation", ["2 Back Court / 3 Front Court", "3 Back Court / 2 Front Court"], horizontal=True)
-        st.caption(f"Selected formation: {formation}")
-        st.caption("현재 화면은 가격 상위 선수 기준의 데모 라인업입니다. 실제 팀 선택 기능은 다음 단계에서 연결하면 됩니다.")
+
+        formation = st.radio(
+            "Formation",
+            ["2 Back Court / 3 Front Court", "3 Back Court / 2 Front Court"],
+            horizontal=True,
+            index=0 if st.session_state.user_formation == "2 Back Court / 3 Front Court" else 1,
+        )
+        if formation != st.session_state.user_formation:
+            st.session_state.user_formation = formation
+            st.session_state.user_starting_keys = auto_starting_keys(st.session_state.user_roster_keys, players, formation)
+            if st.session_state.user_starting_keys:
+                st.session_state.user_captain_key = st.session_state.user_starting_keys[0]
+            sync_user_lineup_to_simulation()
+            st.rerun()
+
+        req_b, req_f = formation_requirements(st.session_state.user_formation)
+        roster_keys = list(st.session_state.user_roster_keys)
+        roster_players = keys_to_players(roster_keys, players)
+        back_options = [player_key(p) for p in roster_players if p.get("position_label") == "Back Court"]
+        front_options = [player_key(p) for p in roster_players if p.get("position_label") == "Front Court"]
+
+        default_start = st.session_state.user_starting_keys or auto_starting_keys(roster_keys, players, st.session_state.user_formation)
+        default_b = [k for k in default_start if k in back_options][:req_b]
+        default_f = [k for k in default_start if k in front_options][:req_f]
+
+        bc_selected = st.multiselect(
+            f"Starting Back Court {req_b}명",
+            options=back_options,
+            default=default_b,
+            format_func=lambda k: label_for_key(k, players),
+        )
+        fc_selected = st.multiselect(
+            f"Starting Front Court {req_f}명",
+            options=front_options,
+            default=default_f,
+            format_func=lambda k: label_for_key(k, players),
+        )
+
+        proposed_starting = list(bc_selected) + list(fc_selected)
+        start_report = validate_starting(proposed_starting, roster_keys, players, st.session_state.user_formation)
+        if start_report["errors"]:
+            for err in start_report["errors"]:
+                st.warning(err)
+
+        if st.button("Save Starting 5", use_container_width=True, disabled=not start_report["valid"]):
+            st.session_state.user_starting_keys = proposed_starting
+            if st.session_state.user_captain_key not in proposed_starting:
+                st.session_state.user_captain_key = proposed_starting[0] if proposed_starting else None
+            sync_user_lineup_to_simulation()
+            st.success("Starting 5 saved.")
+            st.rerun()
+
+        if st.session_state.user_starting_keys:
+            captain_options = st.session_state.user_starting_keys
+            if st.session_state.user_captain_key not in captain_options:
+                st.session_state.user_captain_key = captain_options[0]
+            st.session_state.user_captain_key = st.selectbox(
+                "Captain for Gameday Captain chip",
+                options=captain_options,
+                index=captain_options.index(st.session_state.user_captain_key),
+                format_func=lambda k: label_for_key(k, players),
+            )
 
         st.markdown('<div class="court"><b style="color:#064EA4;">STARTING 5</b>', unsafe_allow_html=True)
         cols = st.columns(5)
-        for col, p in zip(cols, starters):
+        for col, p in zip(cols, keys_to_players(st.session_state.user_starting_keys, players)):
             with col:
-                this_key = f'{p["name"]}_{p["team_2025_26"]}'
-                player_card(p, captain=(this_key == captain_key))
+                player_card(p, captain=(player_key(p) == st.session_state.user_captain_key))
         st.markdown('</div>', unsafe_allow_html=True)
 
+        bench_keys = [k for k in st.session_state.user_roster_keys if k not in st.session_state.user_starting_keys]
         st.markdown('<div class="bench"><b style="color:#E91E73;">BENCH</b>', unsafe_allow_html=True)
         cols = st.columns(5)
-        for i, (col, p) in enumerate(zip(cols, bench), start=1):
+        for i, (col, p) in enumerate(zip(cols, keys_to_players(bench_keys, players)), start=1):
             with col:
                 player_card(p, priority=i)
         st.markdown('</div>', unsafe_allow_html=True)
 
     with right:
         st.markdown('<div class="panel"><div class="panel-title">CHIPS</div>', unsafe_allow_html=True)
-        st.markdown('<div class="chip-row">👑 Gameday Captain <span style="color:#E91E73;">PLAY</span></div>', unsafe_allow_html=True)
-        st.markdown('<div class="chip-row">🛡️ Wildcard <span style="color:#64748b;">Available</span></div>', unsafe_allow_html=True)
-        st.markdown('<div class="chip-row">⭐ All-Star <span style="color:#64748b;">Available</span></div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
+        if st.session_state.chip_captain_active:
+            st.success("👑 Gameday Captain active for next simulated game.")
+        else:
+            if st.button("👑 Play Gameday Captain", use_container_width=True, disabled=not bool(st.session_state.user_starting_keys)):
+                st.session_state.chip_captain_active = True
+                st.rerun()
+
+        if st.session_state.chip_wildcard_active:
+            st.success("🛡️ Wildcard active. Your next roster save will not count transfers.")
+        elif st.session_state.chip_wildcard_available:
+            if st.button("🛡️ Play Wildcard", use_container_width=True):
+                st.session_state.chip_wildcard_available = False
+                st.session_state.chip_wildcard_active = True
+                st.rerun()
+        else:
+            st.button("🛡️ Wildcard Used", use_container_width=True, disabled=True)
+
+        if st.session_state.chip_allstar_active:
+            st.success("⭐ All-Star active for next simulated game. Starting 5 get +20%.")
+        elif st.session_state.chip_allstar_available:
+            if st.button("⭐ Play All-Star", use_container_width=True, disabled=not bool(st.session_state.user_starting_keys)):
+                st.session_state.chip_allstar_available = False
+                st.session_state.chip_allstar_active = True
+                st.rerun()
+        else:
+            st.button("⭐ All-Star Used", use_container_width=True, disabled=True)
+
         st.markdown('<div class="panel"><div class="panel-title">TRANSACTIONS</div>', unsafe_allow_html=True)
-        st.markdown("<b>🔁 2 free this week</b>", unsafe_allow_html=True)
-        st.button("Make Changes", use_container_width=True)
+        st.markdown(f"<b>🔁 Used this gameweek: {st.session_state.user_transfers}</b>", unsafe_allow_html=True)
+        if st.session_state.chip_wildcard_active:
+            st.markdown("<b style='color:#E91E73;'>Wildcard active</b>", unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="panel"><div class="panel-title">LEAGUE TABLE</div>', unsafe_allow_html=True)
-        demo_rankings = [
-            (1, "Seoul Shooters", 0),
-            (2, "Blue Storm", 0),
-            (3, "Dream Team", 0),
-            (4, "Pink Panthers", 0),
-            (5, "Court Queens", 0),
-        ]
-        for rank, team, points in demo_rankings:
-            cls = "league-row league-me" if rank == 3 else "league-row"
-            st.markdown(f'<div class="{cls}"><span>{rank} &nbsp; {team}</span><span>{points}</span></div>', unsafe_allow_html=True)
+        league_rows = sorted(
+            [(team, st.session_state.simulation_team_scores.get(team, 0.0)) for team in SIMULATION_TEAMS],
+            key=lambda x: (-x[1], x[0])
+        )
+        for rank, (team, points) in enumerate(league_rows, start=1):
+            cls = "league-row league-me" if team == st.session_state.simulation_user_team else "league-row"
+            st.markdown(f'<div class="{cls}"><span>{rank} &nbsp; {team}</span><span>{points:.2f}</span></div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
 elif page == "Players":
@@ -1163,7 +2137,7 @@ elif page == "Players":
         filtered = [p for p in filtered if p["position_label"] == pos_filter]
 
     # Default order: highest initial price first.
-    filtered = sorted(filtered, key=lambda p: p["initial_price"], reverse=True)
+    filtered = sorted(filtered, key=lambda p: p.get("current_price", p.get("initial_price", MIN_PRICE)), reverse=True)
 
     selected = None
     for p in players:
@@ -1191,7 +2165,7 @@ elif page == "Players":
         row_cols[1].write(p["team_2025_26"])
         row_cols[2].write(p["position_label"])
         row_cols[3].write(f'{p["fantasy_score"]:.2f}' if p["previous_data"] else "-")
-        row_cols[4].write(format_price(p["initial_price"]))
+        row_cols[4].write(format_price(p.get("current_price", p.get("initial_price", MIN_PRICE))))
         label = "Data" if p["previous_data"] else "Card"
         if row_cols[5].button(label, key=f"data_btn_{idx}_{player_key(p)}"):
             st.session_state.selected_player_key = player_key(p)
@@ -1210,82 +2184,143 @@ elif page == "Simulation":
     <div class="panel">
         <div class="panel-title">2025-26 WKBL Fantasy Simulation</div>
         <div style="line-height:1.7;color:#475569;">
-            지금은 혼자 테스트하는 시뮬레이션 모드입니다. 
-            사용자는 WKBL 6개 팀 중 하나를 선택하고, 나머지 5개 팀은 AI가 자동으로 운영합니다.
-            경기 결과는 나중에 2025-26 시즌 첫 경기부터 차례대로 입력하면 됩니다.
+            전체 경기 결과 CSV를 연결하면 경기 순서대로 Fantasy Score, Gameweek/Day 점수,
+            선수 가격 변동, 사용자 팀과 AI 5개 팀의 리그 점수를 자동 계산합니다.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         summary_card("SALARY CAP", format_price(BUDGET_CAP), "💰")
     with c2:
-        summary_card("MAX INITIAL PRICE", format_price(MAX_PRICE), "⭐")
+        summary_card("PRICE CAP", f"{format_price(MIN_PRICE)} ~ {format_price(MAX_PRICE)}", "⭐")
     with c3:
-        summary_card("MIN INITIAL PRICE", format_price(MIN_PRICE), "🆕")
+        summary_card("PRICE MOVE", f"±{MAX_PRICE_CHANGE_PER_GAME:.2f}억원", "📈")
+    with c4:
+        summary_card("GAME FILE", f"{len(games_2025_26)} games" if game_csv_loaded else "Not loaded", "📄")
 
     st.write("")
 
+    if not game_csv_loaded:
+        st.warning("아직 game_results_2025_26.csv가 GitHub에 없습니다. 아래 형식으로 파일을 만들어 app.py와 같은 위치에 올리면 자동 연결됩니다.")
+        st.code(game_results_template(), language="csv")
+        st.download_button(
+            "Download game_results_2025_26.csv template",
+            data=game_results_template().encode("utf-8-sig"),
+            file_name="game_results_2025_26.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    else:
+        with st.expander("Loaded schedule preview", expanded=False):
+            preview_rows = []
+            for g in games_2025_26[:15]:
+                preview_rows.append({
+                    "Game": g["game_id"],
+                    "Date": g["date"],
+                    "GW": g["gameweek"],
+                    "Day": g["day"],
+                    "Match": f'{g.get("home_team","")} {g.get("home_score","")} vs {g.get("away_team","")} {g.get("away_score","")}',
+                    "Rows": len(g["rows"]),
+                })
+            st.markdown(table_html(preview_rows, ["Game", "Date", "GW", "Day", "Match", "Rows"]), unsafe_allow_html=True)
+
     if not st.session_state.simulation_started:
         selected_team = st.selectbox("내가 운영할 팀 선택", SIMULATION_TEAMS)
-        st.caption("선택하지 않은 5개 팀은 AI가 자동으로 시뮬레이션합니다.")
+        st.caption("선택하지 않은 5개 팀은 AI가 자동으로 로스터와 선발을 구성합니다.")
 
         if st.button("Start 2025-26 Simulation", use_container_width=True):
+            if not st.session_state.user_roster_keys:
+                st.session_state.user_roster_keys = generate_auto_roster(players, seed=101)
+                st.session_state.user_starting_keys = auto_starting_keys(st.session_state.user_roster_keys, players, st.session_state.user_formation)
+                st.session_state.user_captain_key = st.session_state.user_starting_keys[0] if st.session_state.user_starting_keys else None
+            reset_simulation_runtime(players)
             start_simulation(selected_team)
+            initialize_ai_managers(players)
+            update_league_table_from_scores()
             st.rerun()
 
     else:
         user_team = st.session_state.simulation_user_team
-        game_no = st.session_state.simulation_game_no
+        current_idx = st.session_state.simulation_game_index
+        finished = game_csv_loaded and current_idx >= len(games_2025_26)
 
-        status_cols = st.columns(3)
+        status_cols = st.columns(4)
         with status_cols[0]:
             summary_card("MY TEAM", user_team, "🏀")
         with status_cols[1]:
-            summary_card("CURRENT GAME", f"Game {game_no}", "📅")
+            summary_card("CURRENT GAME", "Finished" if finished else f"Game {current_idx + 1}", "📅")
         with status_cols[2]:
-            summary_card("SIMULATION STATUS", "Ready", "✅")
+            summary_card("PROGRESS", f"{min(current_idx, len(games_2025_26))}/{len(games_2025_26)}" if game_csv_loaded else "0/0", "✅")
+        with status_cols[3]:
+            summary_card("MY POINTS", f'{st.session_state.simulation_team_scores.get(user_team, 0.0):.2f}', "⭐")
 
-        st.markdown("### League Table")
-        league = sorted(st.session_state.simulation_league, key=lambda x: (-x["Points"], x["Transfers"], x["Team"]))
-        for i, row in enumerate(league, start=1):
-            row["Rank"] = i
-
-        rows = []
-        for row in league:
-            manager_label = "You" if row["Team"] == user_team else "AI"
-            rows.append({
-                "Rank": row["Rank"],
-                "Team": row["Team"],
-                "Manager": manager_label,
-                "Points": f'{row["Points"]:.1f}',
-                "Transfers": row["Transfers"],
-                "Budget": row["Budget"],
-            })
-        st.markdown(table_html(rows, ["Rank", "Team", "Manager", "Points", "Transfers", "Budget"]), unsafe_allow_html=True)
-
-        st.markdown("### Next Step")
-        st.info(
-            f"Game {game_no} 결과를 받으면 이 화면에 입력 기능을 붙여서 선수별 Fantasy Score를 계산하고, "
-            "사용자 팀과 AI 팀의 점수 및 선수 가격 변동을 업데이트하면 됩니다."
-        )
-
-        with st.expander("나중에 경기 결과를 입력할 때 필요한 형식 보기"):
-            st.code(
-                "date,player,team,minutes,2pmade,2pa,3pmade,3pa,ftm,fta,oreb,dreb,ast,stl,blk,to,pts\n"
-                "2025-10-01,김단비,우리은행,34:20,8,17,2,6,5,6,3,7,5,2,1,3,27",
-                language="csv",
+        if game_csv_loaded and not finished:
+            g = games_2025_26[current_idx]
+            st.markdown("### Next Game")
+            st.markdown(
+                f"**Game {current_idx + 1}** · GW {g.get('gameweek')} Day {g.get('day')} · "
+                f"{g.get('date')} {g.get('time')} · "
+                f"{g.get('home_team')} {g.get('home_score')} vs {g.get('away_team')} {g.get('away_score')}"
             )
 
-        reset_cols = st.columns([1, 3])
-        with reset_cols[0]:
-            if st.button("Reset Simulation"):
+            b1, b2, b3 = st.columns(3)
+            with b1:
+                if st.button("Simulate Next Game", use_container_width=True):
+                    process_one_game(games_2025_26[st.session_state.simulation_game_index], players)
+                    st.rerun()
+            with b2:
+                if st.button("Simulate Current Gameweek", use_container_width=True):
+                    process_next_gameweek(games_2025_26, players)
+                    st.rerun()
+            with b3:
+                if st.button("Reset Simulation", use_container_width=True):
+                    st.session_state.simulation_started = False
+                    st.session_state.simulation_user_team = None
+                    st.session_state.simulation_game_no = 1
+                    st.session_state.simulation_league = []
+                    reset_simulation_runtime(players)
+                    st.rerun()
+        elif finished:
+            st.success("전체 경기 시뮬레이션이 끝났습니다.")
+            if st.button("Reset Simulation", use_container_width=True):
                 st.session_state.simulation_started = False
                 st.session_state.simulation_user_team = None
                 st.session_state.simulation_game_no = 1
                 st.session_state.simulation_league = []
+                reset_simulation_runtime(players)
                 st.rerun()
+
+        st.markdown("### League Table")
+        update_league_table_from_scores()
+        league = sorted(st.session_state.simulation_league, key=lambda x: (-x["Points"], x["Transfers"], x["Team"]))
+        rows = []
+        for i, row in enumerate(league, start=1):
+            manager_label = "You" if row["Team"] == user_team else "AI"
+            rows.append({
+                "Rank": i,
+                "Team": row["Team"],
+                "Manager": manager_label,
+                "Points": f'{row["Points"]:.2f}',
+                "Transfers": row["Transfers"],
+            })
+        st.markdown(table_html(rows, ["Rank", "Team", "Manager", "Points", "Transfers"]), unsafe_allow_html=True)
+
+        if st.session_state.simulation_history:
+            st.markdown("### Last Simulated Game")
+            last = st.session_state.simulation_history[-1]
+            st.markdown(
+                f"**GW {last['gameweek']} Day {last['day']}** · {last['date']} {last['time']} · {last['match']}"
+            )
+
+            points_rows = []
+            for team, pts in sorted(last["team_points"].items(), key=lambda x: -x[1]):
+                points_rows.append({"Fantasy Team": team, "Game Points": f"{pts:.2f}"})
+            st.markdown(table_html(points_rows, ["Fantasy Team", "Game Points"]), unsafe_allow_html=True)
+
+            with st.expander("Top price changes from this game"):
+                st.markdown(table_html(last["price_changes"], ["Player", "Team", "Game Score", "Old Price", "Change", "New Price"]), unsafe_allow_html=True)
 
 elif page == "Help":
     st.markdown('<div class="section-title">HOW TO PLAY</div>', unsafe_allow_html=True)
@@ -1299,6 +2334,7 @@ elif page == "Help":
     - Max players per WKBL team: 2
     - Free transfers: 2 per Gameweek
     - Deadline: 30 minutes before the first game of the Gameday, KST
+    - Game results are read from `game_results_2025_26.csv`
 
     ### Fantasy Score Formula
     Good Defense is excluded.
@@ -1311,6 +2347,19 @@ elif page == "Help":
     - CSV made-shot headers such as 2pmade and 3pmade are supported.
     - Players without previous-season data start at the minimum price, 0.3억원.
     - Formula: `0.3억원 + 4.2억원 × (player score / league top score)`
+
+    ### Season Price Update
+    - Prices update from actual 2025-26 game performance.
+    - Price range: 0.30억원 ~ 4.50억원.
+    - One-game maximum movement: `δmax = 0.50 × (4.50 - 0.30) / 30 = 0.07억원`.
+    - Update formula: `P_next = clip(P_current + 0.07 × tanh((S - E) / 10), 0.30, 4.50)`.
+    - Expected score updates by moving average: `E_next = 0.8E_current + 0.2S`.
+    - Players who do not play keep the same price for that game.
+
+    ### Chips
+    - Gameday Captain: selected captain's score is doubled for the next simulated game.
+    - Wildcard: your next roster save does not count as transfers.
+    - All-Star: Starting 5 receive a +20% bonus for the next simulated game.
     """)
 
 # =========================
