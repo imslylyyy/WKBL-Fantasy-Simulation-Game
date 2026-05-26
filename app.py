@@ -5,6 +5,7 @@ import csv
 import base64
 import mimetypes
 import re
+from urllib.parse import quote
 from pathlib import Path
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide")
@@ -43,14 +44,23 @@ COLUMNS = [
 # =========================
 # Page State
 # =========================
-if "page" not in st.session_state:
+VALID_PAGES = ["Home", "My Team", "Players", "Simulation", "Help"]
+
+query_page = st.query_params.get("page", None)
+if query_page == "Leagues":
+    query_page = "Simulation"
+
+if query_page in VALID_PAGES:
+    st.session_state.page = query_page
+elif "page" not in st.session_state:
     st.session_state.page = "Home"
 
 if "selected_player_key" not in st.session_state:
     st.session_state.selected_player_key = None
 
-if st.session_state.page == "Leagues":
-    st.session_state.page = "Simulation"
+if "player_name_sort" not in st.session_state:
+    # None = default price order, "asc" = Korean name order, "desc" = reverse name order
+    st.session_state.player_name_sort = None
 
 if "simulation_started" not in st.session_state:
     st.session_state.simulation_started = False
@@ -66,6 +76,7 @@ if "simulation_league" not in st.session_state:
 
 def go_to(page_name: str):
     st.session_state.page = page_name
+    st.query_params["page"] = page_name
 
 def player_key(player):
     return f'{player.get("name", "")}__{player.get("team_2025_26", "")}'
@@ -520,6 +531,33 @@ html, body, [class*="css"] {
     margin-bottom: 18px;
 }
 
+.nav-links {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+}
+.nav-link {
+    display: block;
+    text-align: center;
+    text-decoration: none !important;
+    border-radius: 9px;
+    background: white;
+    color: #111827 !important;
+    font-weight: 900;
+    padding: 0.75rem 0.5rem;
+    font-size: 1rem;
+    border: 1px solid #e5e7eb;
+}
+.nav-link:hover {
+    background: #eaf3ff;
+    color: #064EA4 !important;
+}
+.nav-link.active {
+    background: #E91E73;
+    color: white !important;
+    border-color: #E91E73;
+}
+
 .nav-wrap div[data-testid="column"] {
     padding: 0 !important;
 }
@@ -905,20 +943,19 @@ def header():
     """, unsafe_allow_html=True)
 
 def nav():
+    # Real <a href="?page=..."> links are used instead of Streamlit buttons.
+    # This makes the browser history work naturally, so Alt + Left / Alt + Right
+    # moves backward and forward through visited app pages.
     items = ["Home", "My Team", "Players", "Simulation", "Help"]
-    st.markdown('<div class="nav-wrap">', unsafe_allow_html=True)
-    cols = st.columns(len(items) + 1)
-    for col, item in zip(cols[:-1], items):
-        with col:
-            if item == st.session_state.page:
-                st.markdown(f'<div class="active-tab">{item}</div>', unsafe_allow_html=True)
-            else:
-                if st.button(item, key=f"topnav_{item}", use_container_width=True):
-                    go_to(item)
-                    st.rerun()
-    with cols[-1]:
-        st.button("Sign out", key="topnav_signout", use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+    links = []
+    for item in items:
+        active = " active" if item == st.session_state.page else ""
+        links.append(f'<a class="nav-link{active}" href="?page={quote(item)}">{item}</a>')
+    links.append('<a class="nav-link" href="?page=Home">Sign out</a>')
+    st.markdown(
+        '<div class="nav-wrap"><div class="nav-links">' + "".join(links) + '</div></div>',
+        unsafe_allow_html=True,
+    )
 
 def table_html(rows, columns):
     html = "<table style='width:100%;border-collapse:collapse;background:white;border-radius:14px;overflow:hidden;'>"
@@ -944,7 +981,7 @@ def player_detail_panel(player):
 
     with c2:
         st.markdown(f"#### {player['name']} [{player['team_2025_26']}]")
-        st.markdown(f"**Position:** {player['position_short']}  \n**Initial Price:** {format_price(player['initial_price'])}")
+        st.markdown(f"**Position:** {player['position_label']}  \n**Initial Price:** {format_price(player['initial_price'])}")
 
         if not player["previous_data"]:
             st.info("전 시즌 기록이 없는 선수입니다. 초기 가격은 최저가 0.3억원으로 처리됩니다.")
@@ -1130,8 +1167,6 @@ elif page == "Players":
     if pos_filter != "All":
         filtered = [p for p in filtered if p["position_label"] == pos_filter]
 
-    filtered = sorted(filtered, key=lambda p: p["initial_price"], reverse=True)
-
     selected = None
     for p in players:
         if player_key(p) == st.session_state.selected_player_key:
@@ -1143,17 +1178,41 @@ elif page == "Players":
         st.write("")
 
     st.markdown("### Player List")
-    header_cols = st.columns([1.7, 1.2, 0.6, 1.2, 1.0, 0.8])
-    headers = ["Name", "Team", "Pos", "Fantasy Score", "Initial Price", "Data"]
-    for col, h in zip(header_cols, headers):
-        col.markdown(f"**{h}**")
+    header_cols = st.columns([1.45, 1.05, 1.15, 1.1, 1.0, 0.65])
+
+    sort_state = st.session_state.player_name_sort
+    name_arrow = ""
+    if sort_state == "asc":
+        name_arrow = " ▲"
+    elif sort_state == "desc":
+        name_arrow = " ▼"
+
+    if header_cols[0].button(f"Name{name_arrow}", key="sort_name_button", help="Click to sort by name. Click again to reverse."):
+        if st.session_state.player_name_sort == "asc":
+            st.session_state.player_name_sort = "desc"
+        else:
+            st.session_state.player_name_sort = "asc"
+        st.rerun()
+
+    header_cols[1].markdown("**Team**")
+    header_cols[2].markdown("**Position**")
+    header_cols[3].markdown("**Fantasy Score**")
+    header_cols[4].markdown("**Initial Price**")
+    header_cols[5].markdown("**Data**")
     st.markdown("<hr style='margin: 0.3rem 0 0.6rem 0;'>", unsafe_allow_html=True)
 
+    if st.session_state.player_name_sort == "asc":
+        filtered = sorted(filtered, key=lambda p: (p["name"], p["team_2025_26"]))
+    elif st.session_state.player_name_sort == "desc":
+        filtered = sorted(filtered, key=lambda p: (p["name"], p["team_2025_26"]), reverse=True)
+    else:
+        filtered = sorted(filtered, key=lambda p: p["initial_price"], reverse=True)
+
     for idx, p in enumerate(filtered):
-        row_cols = st.columns([1.7, 1.2, 0.6, 1.2, 1.0, 0.8])
+        row_cols = st.columns([1.45, 1.05, 1.15, 1.1, 1.0, 0.65])
         row_cols[0].write(p["name"])
         row_cols[1].write(p["team_2025_26"])
-        row_cols[2].write(p["position_short"])
+        row_cols[2].write(p["position_label"])
         row_cols[3].write(f'{p["fantasy_score"]:.2f}' if p["previous_data"] else "-")
         row_cols[4].write(format_price(p["initial_price"]))
         label = "Data" if p["previous_data"] else "Card"
@@ -1254,7 +1313,10 @@ elif page == "Simulation":
 elif page == "Help":
     st.markdown('<div class="section-title">HOW TO PLAY</div>', unsafe_allow_html=True)
     st.markdown("""
-    ### Core Rules
+    ### Browser Navigation
+- Use **Alt + ←** and **Alt + →** to move backward and forward through visited pages.
+
+### Core Rules
     - Roster size: 10 players
     - Roster composition: 5 Back Court + 5 Front Court
     - Starting line-up: 5 players
