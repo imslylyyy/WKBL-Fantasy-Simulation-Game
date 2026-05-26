@@ -12,7 +12,7 @@ from pathlib import Path
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v18.1 / quest map error fix"
+APP_VERSION = "Final Version v21.0 / dashboard home + pack flow"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -92,7 +92,7 @@ if "bgm_enabled" not in st.session_state:
     st.session_state.bgm_enabled = False
 
 if "page" not in st.session_state:
-    st.session_state.page = "My Team"
+    st.session_state.page = "Home"
 
 if "selected_player_key" not in st.session_state:
     st.session_state.selected_player_key = None
@@ -192,7 +192,7 @@ def begin_game_session(players_list, games_list, manager_name):
     """Create the user's fantasy league and enter the main game."""
     st.session_state.manager_name = manager_name.strip()
     st.session_state.fantasy_team_names = [st.session_state.manager_name] + generate_ai_team_names(5)
-    st.session_state.page = "My Team"
+    st.session_state.page = "Home"
 
     # First gameday roster is generated only from the first game's two real WKBL teams.
     if games_list:
@@ -1025,6 +1025,39 @@ button[kind="secondary"] {
 }
 .has-data { background:#dcfce7; color:#166534; }
 .no-data { background:#fee2e2; color:#991b1b; }
+
+
+/* v21 dashboard home */
+.nav-wrap { background: rgba(2,6,23,.82); border:1px solid rgba(255,255,255,.12); box-shadow:0 12px 30px rgba(2,6,23,.18); }
+.v21-home { position:relative; overflow:hidden; border-radius:30px; min-height:520px; padding:34px 36px 22px; color:white; border:1px solid rgba(255,255,255,.16); box-shadow:0 26px 70px rgba(2,6,23,.28); background-size:cover; background-position:center; }
+.v21-home:before { content:""; position:absolute; inset:0; background:linear-gradient(90deg, rgba(2,6,23,.94) 0%, rgba(2,6,23,.78) 36%, rgba(2,6,23,.38) 67%, rgba(2,6,23,.72) 100%); }
+.v21-home:after { content:""; position:absolute; left:-160px; bottom:-160px; width:460px; height:460px; border:2px solid rgba(233,30,115,.55); border-radius:50%; box-shadow:0 0 70px rgba(233,30,115,.35); }
+.v21-home > * { position:relative; z-index:2; }
+.v21-topbar { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:42px; }
+.v21-brand { display:flex; align-items:center; gap:14px; font-weight:900; }
+.v21-brand img { width:105px; max-height:72px; object-fit:contain; filter:drop-shadow(0 8px 18px rgba(0,0,0,.35)); }
+.v21-manager { display:flex; gap:10px; align-items:center; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.20); border-radius:18px; padding:10px 14px; font-weight:900; }
+.v21-title { font-family:'Oswald',sans-serif; font-size:82px; line-height:.90; font-weight:900; letter-spacing:-2px; text-shadow:0 10px 34px rgba(0,0,0,.48); }
+.v21-title .pink { color:#ff4fa3; display:block; }
+.v21-sub { margin-top:16px; font-size:18px; line-height:1.35; color:rgba(255,255,255,.88); font-weight:700; max-width:440px; }
+.v21-cta-row { display:flex; flex-wrap:wrap; gap:12px; margin-top:22px; }
+.v21-cta { display:inline-flex; align-items:center; gap:10px; border-radius:14px; padding:12px 20px; font-weight:900; color:white; background:linear-gradient(135deg,#ff4fa3,#e91e73); box-shadow:0 0 24px rgba(233,30,115,.45); }
+.v21-ghost { background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.30); box-shadow:none; }
+.v21-home-grid { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:14px; margin-top:16px; }
+.v21-tile { min-height:158px; border-radius:18px; padding:16px; background:linear-gradient(145deg, rgba(15,23,42,.84), rgba(30,64,175,.45)); border:1px solid rgba(255,255,255,.16); box-shadow:0 14px 30px rgba(2,6,23,.25); color:white; position:relative; overflow:hidden; }
+.v21-tile h3 { margin:0 0 10px; color:white; font-size:17px; font-weight:900; }
+.v21-tile p { margin:0; color:rgba(255,255,255,.76); font-size:13px; line-height:1.45; }
+.v21-tile .tile-icon { font-size:26px; margin-bottom:10px; color:#ff4fa3; }
+.v21-next-logos { display:flex; align-items:center; justify-content:center; gap:10px; margin:10px 0; }
+.v21-next-logos img { width:54px; height:54px; object-fit:contain; background:rgba(255,255,255,.90); border-radius:14px; padding:5px; }
+.v21-club-footer { margin-top:24px; display:flex; align-items:center; gap:18px; background:rgba(2,6,23,.76); border:1px solid rgba(255,255,255,.16); border-radius:26px; padding:18px 22px; box-shadow:0 0 30px rgba(233,30,115,.16); }
+.v21-club-footer-title { font-family:'Oswald',sans-serif; font-size:24px; font-style:italic; font-weight:900; color:white; padding-right:20px; border-right:1px solid rgba(255,255,255,.25); }
+.v21-club-footer .club-logo { background:transparent; box-shadow:none; width:90px; height:68px; border-radius:0; }
+.v21-club-footer .club-logo img { width:76px; height:62px; filter:drop-shadow(0 7px 12px rgba(0,0,0,.25)); }
+.v21-action-card { margin-top:10px; }
+.v21-action-card .stButton > button { border-radius:999px; font-weight:900; border:1px solid rgba(255,255,255,.22); background:#E91E73; color:white; }
+.v21-action-card .stButton > button:hover { background:#ff4fa3; color:white; border-color:#ff4fa3; }
+@media(max-width:1100px){ .v21-home-grid{grid-template-columns:repeat(2,1fr);} .v21-title{font-size:58px;} }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1333,7 +1366,7 @@ def header():
     """, unsafe_allow_html=True)
 
 def nav():
-    items = ["Home", "My Team", "Players", "Simulation", "Results", "Help"]
+    items = ["Home", "My Team", "Players", "Simulation", "Help"]
     st.markdown('<div class="nav-wrap">', unsafe_allow_html=True)
     cols = st.columns(len(items))
 
@@ -1347,6 +1380,117 @@ def nav():
                     st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
+
+
+def render_dashboard_home(players_list, games_list):
+    """Game-like home dashboard. This replaces the old quest-map home screen."""
+    update_league_table_from_scores()
+    g = current_game()
+    gw = g.get("gameweek", 1) if g else 1
+    day = g.get("day", 1) if g else 1
+    match = game_match_label(g) if g else "No game loaded"
+    date = g.get("date", "") if g else ""
+    time = g.get("time", "") if g else ""
+    venue = g.get("venue", "") if g else ""
+    home = g.get("home_team", "") if g else ""
+    away = g.get("away_team", "") if g else ""
+    home_logo = team_logo_data_url(home)
+    away_logo = team_logo_data_url(away)
+    wkbl = asset_data_url(WKBL_LOGO_PATH)
+    bg = asset_data_url(SPLASH_BG_PATH) or asset_data_url(HERO_IMAGE_PATH)
+    bg_style = f"background-image:url('{bg}');" if bg else "background:linear-gradient(135deg,#020617,#064EA4,#E91E73);"
+    manager = st.session_state.get("manager_name", "WKBL FAN") or "WKBL FAN"
+    user_team = st.session_state.get("simulation_user_team") or manager
+    my_points = float(st.session_state.get("simulation_team_scores", {}).get(user_team, 0.0))
+    league = sorted(st.session_state.get("simulation_league", []), key=lambda x: (-x.get("Points", 0), str(x.get("Team", ""))))
+    rank = "-"
+    for i, row in enumerate(league, start=1):
+        if row.get("Team") == user_team:
+            rank = str(i)
+            break
+    standing_lines = ""
+    for i, row in enumerate(league[:3], start=1):
+        standing_lines += f"<div style='display:flex;justify-content:space-between;font-size:12px;margin:3px 0;'><span>{i} · {row.get('Team','')}</span><b>{row.get('Points',0):.1f}</b></div>"
+    if not standing_lines:
+        standing_lines = "<p>아직 순위가 없습니다.</p>"
+    home_logo_html = f'<img src="{home_logo}" alt="{home}">' if home_logo else ''
+    away_logo_html = f'<img src="{away_logo}" alt="{away}">' if away_logo else ''
+    wkbl_logo_html = f'<img src="{wkbl}" alt="WKBL">' if wkbl else '<div style="font-size:34px;font-weight:900;">WKBL</div>'
+
+    st.markdown(f"""
+    <div class="v21-home" style="{bg_style}">
+      <div class="v21-topbar">
+        <div class="v21-brand">{wkbl_logo_html}</div>
+        <div style="display:flex;gap:12px;align-items:center;">
+          <div class="v21-manager">⭐ {my_points:.0f}</div>
+          <div class="v21-manager">👤 {manager}<br><span style='font-size:11px;color:rgba(255,255,255,.65);'>Rookie Manager · Rank {rank}</span></div>
+        </div>
+      </div>
+      <div class="v21-title"><span>WKBL</span><span class="pink">Fantasy</span></div>
+      <div class="v21-sub">Build. Compete. Win.<br>카드를 뽑고, 라인업을 만들고, 매 경기 판타지 포인트로 순위를 올리세요.</div>
+      <div class="v21-cta-row">
+        <div class="v21-cta">Build My Team →</div>
+        <div class="v21-cta v21-ghost">How to Play ▶</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1:
+        st.markdown("<div class='v21-tile'><div class='tile-icon'>🎴</div><h3>My Lineup</h3><p>Starting 5와 Bench를 관리합니다.</p></div>", unsafe_allow_html=True)
+        st.markdown("<div class='v21-action-card'>", unsafe_allow_html=True)
+        if st.button("Manage", key="dash_manage_lineup", use_container_width=True):
+            st.session_state.page = "My Team"
+            st.session_state.main_flow_stage = "lineup" if st.session_state.get("user_roster_keys") else "pack_lobby"
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+    with c2:
+        st.markdown("<div class='v21-tile'><div class='tile-icon'>👑</div><h3>Captain Pick</h3><p>캡틴은 자동 2배 점수를 받습니다.</p></div>", unsafe_allow_html=True)
+        st.markdown("<div class='v21-action-card'>", unsafe_allow_html=True)
+        if st.button("Select Captain", key="dash_captain", use_container_width=True):
+            st.session_state.page = "My Team"
+            st.session_state.main_flow_stage = "lineup" if st.session_state.get("user_roster_keys") else "pack_lobby"
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+    with c3:
+        used_gws = set(st.session_state.get("chip_allstar_used_gameweeks", []))
+        active = bool(st.session_state.get("chip_allstar_active", False))
+        used = gw in used_gws
+        status = "활성화됨" if active else ("이번 GW 사용 완료" if used else "주차당 1회 사용 가능")
+        st.markdown(f"<div class='v21-tile'><div class='tile-icon'>⭐</div><h3>All-Star Challenge</h3><p>{status}<br>다음 경기 Starting 5 +20%.</p></div>", unsafe_allow_html=True)
+        st.markdown("<div class='v21-action-card'>", unsafe_allow_html=True)
+        if st.button("All-Star 사용", key="dash_allstar", use_container_width=True, disabled=active or used):
+            st.session_state.chip_allstar_active = True
+            st.session_state.chip_allstar_available = False
+            st.session_state.chip_allstar_active_gameweek = gw
+            st.success(f"GW {gw} All-Star가 활성화되었습니다. 다음 시뮬레이션 경기에서 적용됩니다.")
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+    with c4:
+        st.markdown("<div class='v21-tile'><div class='tile-icon'>🔁</div><h3>Transfers</h3><p>Gameday마다 무제한 이적. 단, 현재 경기 두 팀 선수만 선택.</p></div>", unsafe_allow_html=True)
+        st.markdown("<div class='v21-action-card'>", unsafe_allow_html=True)
+        if st.button("Go to Market", key="dash_market", use_container_width=True):
+            st.session_state.page = "My Team"
+            st.session_state.main_flow_stage = "pack_lobby"
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+    with c5:
+        st.markdown(f"<div class='v21-tile'><div class='tile-icon'>🏆</div><h3>Standings</h3>{standing_lines}</div>", unsafe_allow_html=True)
+        st.markdown("<div class='v21-action-card'>", unsafe_allow_html=True)
+        if st.button("View", key="dash_standings", use_container_width=True):
+            st.session_state.page = "Simulation"
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+    with c6:
+        st.markdown(f"<div class='v21-tile'><div class='tile-icon'>📅</div><h3>Next Game</h3><div class='v21-next-logos'>{home_logo_html}<b>VS</b>{away_logo_html}</div><p>GW {gw} Day {day}<br>{date} {time}<br>{venue}</p></div>", unsafe_allow_html=True)
+        st.markdown("<div class='v21-action-card'>", unsafe_allow_html=True)
+        if st.button("Game Preview", key="dash_preview", use_container_width=True):
+            st.session_state.page = "My Team"
+            st.session_state.main_flow_stage = "pack_lobby"
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown(f"<div class='v21-club-footer'><div class='v21-club-footer-title'>🏀 WKBL CLUBS</div>{team_logo_strip_html()}</div>", unsafe_allow_html=True)
 
 
 def sidebar_menu():
@@ -1473,7 +1617,7 @@ def initialize_fantasy_state(players_list):
         "pack_front_keys": [],
         "pack_back_opened": False,
         "pack_front_opened": False,
-        "main_flow_stage": "map",
+        "main_flow_stage": "pack_lobby",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -2430,7 +2574,7 @@ def ensure_pack_state_for_current_game():
         st.session_state.pack_front_keys = []
         st.session_state.pack_back_opened = False
         st.session_state.pack_front_opened = False
-        st.session_state.main_flow_stage = "map"
+        st.session_state.main_flow_stage = "pack_lobby"
 
 def pack_bg_style():
     splash = asset_data_url(SPLASH_BG_PATH) or asset_data_url(HERO_IMAGE_PATH)
@@ -2765,7 +2909,7 @@ elif st.session_state.app_phase == "name_input":
 
 render_bgm_player()
 handle_query_actions()
-sidebar_menu()
+nav()
 page = st.session_state.page
 
 # Common derived values
@@ -2778,19 +2922,14 @@ highest_player = max(players_with_data, key=lambda p: p["fantasy_score"], defaul
 # Pages
 # =========================
 if page == "Home":
-    st.markdown("<div class='section-title'>HOME</div>", unsafe_allow_html=True)
-    st.info("메인 플레이는 '메인 플레이' 메뉴에서 진행됩니다. 좌측 상단 ☰ 버튼을 눌러 이동하세요.")
-    if st.button("메인 플레이로 이동", use_container_width=True):
-        st.session_state.page = "My Team"
-        st.rerun()
-
+    render_dashboard_home(players, games_2025_26)
 
 elif page == "My Team":
     ensure_pack_state_for_current_game()
     next_game_obj = current_game()
     current_idx = st.session_state.simulation_game_index
     manager_name = st.session_state.get("manager_name", "감독")
-    stage = st.session_state.get("main_flow_stage", "map")
+    stage = st.session_state.get("main_flow_stage", "pack_lobby")
 
     if not next_game_obj:
         st.warning("연결된 경기 일정이 없습니다. game_results_2025_26.csv를 먼저 확인해 주세요.")
@@ -2802,21 +2941,14 @@ elif page == "My Team":
 
         top_left, top_right = st.columns([3, 1.3])
         with top_left:
-            st.markdown(f"<div class='section-title'>WK {gw} GAME MAP</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='section-title'>WK {gw} GAME PREVIEW</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='font-size:18px;font-weight:900;color:#0f172a;margin-bottom:10px;'>감독 닉네임: <span style='color:#E91E73'>{manager_name}</span></div>", unsafe_allow_html=True)
         with top_right:
             st.info(f"현재 경기\n\nGW {gw} · Day {day}\n\n{match_label}")
 
-        if stage == "map":
-            components.html(quest_map_html(games_2025_26, current_idx), height=780, scrolling=False)
-            st.caption("현재 퀘스트 네모칸을 클릭하거나 아래 버튼을 누르면 선수팩 화면으로 이동합니다. 메뉴는 좌측 상단의 ☰ 버튼으로 이동합니다.")
-            c1, c2 = st.columns([2, 1])
-            with c1:
-                st.success("메인 플레이 화면입니다. 현재 퀘스트에 입장해 FRONT/BACK COURT PACK을 열고 10장의 카드를 고른 뒤 라인업을 완성하세요.")
-            with c2:
-                if st.button("현재 퀘스트 입장", use_container_width=True):
-                    st.session_state.main_flow_stage = "pack_lobby"
-                    st.rerun()
+        if stage in ("map", "dashboard"):
+            st.session_state.main_flow_stage = "pack_lobby"
+            st.rerun()
 
         elif stage == "pack_lobby":
             st.markdown('<div class="section-title">PLAYER PACK LOBBY</div>', unsafe_allow_html=True)
@@ -2841,8 +2973,8 @@ elif page == "My Team":
                     st.success("선택 완료 5/5")
             b1, b2 = st.columns([1,1])
             with b1:
-                if st.button("← 맵으로", use_container_width=True):
-                    st.session_state.main_flow_stage = "map"
+                if st.button("← 홈으로", use_container_width=True):
+                    st.session_state.page = "Home"
                     st.rerun()
             with b2:
                 can_go = len(st.session_state.get("pack_front_keys", [])) == 5 and len(st.session_state.get("pack_back_keys", [])) == 5
@@ -2984,8 +3116,8 @@ elif page == "My Team":
                         st.session_state.main_flow_stage = "pack_lobby"
                         st.rerun()
                 with c2:
-                    if st.button("메인 맵으로", use_container_width=True):
-                        st.session_state.main_flow_stage = "map"
+                    if st.button("홈으로", use_container_width=True):
+                        st.session_state.page = "Home"
                         st.rerun()
                 with c3:
                     if st.button("시뮬레이션 메뉴로 이동", use_container_width=True):
@@ -3065,7 +3197,7 @@ elif page == "Simulation":
         <div class="panel-title">One Game at a Time</div>
         <div style="line-height:1.7;color:#475569;">
             한 번에 여러 경기를 돌리지 않고, 실제 경기 순서대로 하나씩 진행합니다.
-            지도에서 현재 열려 있는 퀘스트를 확인한 뒤 My Team에서 선수팩을 열고 라인업을 짜세요.
+            Home 화면의 Next Game 또는 Build My Team에서 선수팩을 열고 라인업을 짜세요.
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -3117,22 +3249,31 @@ elif page == "Simulation":
 
         if game_csv_loaded and not finished:
             g = games_2025_26[current_idx]
-            components.html(quest_map_html(games_2025_26, current_idx), height=780, scrolling=False)
-
-            st.markdown("### Current Quest")
+            st.markdown("### Next Game")
             st.caption("예정 경기이므로 여기서는 최종 점수를 보여주지 않습니다. 완료된 경기 결과는 Results 탭에서 확인하세요.")
-            st.markdown(
-                f"**Game {current_idx + 1}** · GW {g.get('gameweek')} Day {g.get('day')} · "
-                f"{g.get('date')} {g.get('time')} · {game_match_label(g)} · {g.get('venue','')}"
-            )
+            home_logo = team_logo_img_html(g.get("home_team", ""), 62)
+            away_logo = team_logo_img_html(g.get("away_team", ""), 62)
+            st.markdown(f"""
+            <div class="panel" style="background:linear-gradient(135deg,#020617,#0f2e66);color:white;border-color:rgba(255,255,255,.15);">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+                <div>
+                  <div style="font-size:13px;color:rgba(255,255,255,.62);font-weight:900;">GAME {current_idx + 1} · GW {g.get('gameweek')} DAY {g.get('day')}</div>
+                  <div style="font-size:24px;font-weight:900;margin-top:4px;">{game_match_label(g)}</div>
+                  <div style="color:rgba(255,255,255,.75);margin-top:4px;">{g.get('date')} {g.get('time')} · {g.get('venue','')}</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:12px;">{home_logo}<b>VS</b>{away_logo}</div>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
             allowed = game_allowed_teams(g)
             if allowed:
-                st.info(f"현재 잠금 해제된 경기: {' vs '.join(allowed)}. 이 두 팀 선수팩만 열 수 있습니다.")
+                st.info(f"현재 경기: {' vs '.join(allowed)}. 이 두 팀 선수팩만 열 수 있습니다.")
 
             col_a, col_b = st.columns([1, 1])
             with col_a:
-                if st.button("현재 퀘스트 라인업 짜러 가기", use_container_width=True):
-                    go_to("My Team")
+                if st.button("라인업 짜러 가기", use_container_width=True):
+                    st.session_state.page = "My Team"
+                    st.session_state.main_flow_stage = "pack_lobby"
                     st.rerun()
             with col_b:
                 readiness = gameday_lineup_report(g, players)
@@ -3279,7 +3420,7 @@ elif page == "Help":
     ### Important Simulation Detail
     - 각 실제 경기에서는 그 경기에 출전한 선수만 점수를 얻습니다.
     - 예를 들어 다음 경기가 BNK썸 vs 신한은행이면, My Team에서는 BNK썸과 신한은행 선수만 선택할 수 있습니다.
-    - Simulation 탭에는 `Simulate Next Game`만 남겨두었습니다. 경기마다 My Team에서 로스터와 Starting 5를 맞춘 뒤 한 경기씩 진행하는 방식입니다.
+    - Simulation 탭에는 `Simulate Next Game`만 남겨두었습니다. 경기마다 Home → Build My Team에서 로스터와 Starting 5를 맞춘 뒤 한 경기씩 진행하는 방식입니다.
     """)
 
 # =========================
