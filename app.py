@@ -3480,34 +3480,34 @@ def render_splash_screen():
         position:absolute; top:24px; right:34px; color:rgba(255,255,255,.88);
         font-weight:800; letter-spacing:.5px; font-size:16px; text-shadow:0 3px 10px rgba(0,0,0,.35);
     }}
-    .splash-copy {
+    .splash-copy {{
         position:absolute; left:42px; bottom:42px; max-width:520px;
         z-index:3;
-    }
-    .splash-title {
+    }}
+    .splash-title {{
         font-family:'Oswald', sans-serif; color:white; font-size:78px; font-weight:900;
         text-shadow:0 6px 30px rgba(0,0,0,.60); letter-spacing:-1px; text-align:left; line-height:.92;
-    }
+    }}
     .splash-title span {{ color:#E91E73; }}
-    .splash-sub {
+    .splash-sub {{
         margin-top:18px; color:rgba(255,255,255,.92); font-weight:800; font-size:19px; line-height:1.38;
         text-shadow:0 4px 18px rgba(0,0,0,.45);
-    }
+    }}
     .start-guide {{
         position:absolute; left:50%; bottom:136px; transform:translateX(-50%);
         color:rgba(255,255,255,.82); font-weight:800; text-align:center;
         animation:splashFloat 2.4s ease-in-out infinite;
     }}
-    @keyframes splashGlow {
-        0% { box-shadow: 0 0 18px rgba(250,204,21,.24), 0 12px 36px rgba(0,0,0,.36); }
-        50% { box-shadow: 0 0 32px rgba(250,204,21,.48), 0 14px 44px rgba(0,0,0,.42); }
-        100% { box-shadow: 0 0 18px rgba(250,204,21,.24), 0 12px 36px rgba(0,0,0,.36); }
-    }
-    @keyframes splashFloat {
-        0% { transform: translateX(-50%) translateY(0px); }
-        50% { transform: translateX(-50%) translateY(-2px); }
-        100% { transform: translateX(-50%) translateY(0px); }
-    }
+    @keyframes splashGlow {{
+        0% {{ box-shadow: 0 0 18px rgba(250,204,21,.24), 0 12px 36px rgba(0,0,0,.36); }}
+        50% {{ box-shadow: 0 0 32px rgba(250,204,21,.48), 0 14px 44px rgba(0,0,0,.42); }}
+        100% {{ box-shadow: 0 0 18px rgba(250,204,21,.24), 0 12px 36px rgba(0,0,0,.36); }}
+    }}
+    @keyframes splashFloat {{
+        0% {{ transform: translateX(-50%) translateY(0px); }}
+        50% {{ transform: translateX(-50%) translateY(-2px); }}
+        100% {{ transform: translateX(-50%) translateY(0px); }}
+    }}
     div[data-testid="stButton"] > button:has(div), .stButton > button {{
         font-weight:900;
     }}
@@ -3530,12 +3530,12 @@ def render_splash_screen():
         transform: translateY(-1px);
         filter: brightness(1.04);
     }}
-    @media (max-width: 900px) {
-        .splash-copy { left:24px; right:24px; bottom:28px; max-width:none; }
-        .splash-title { font-size:56px; }
-        .splash-sub { font-size:16px; line-height:1.35; }
-        .start-guide { width:calc(100% - 48px); bottom:138px; }
-    }
+    @media (max-width: 900px) {{
+        .splash-copy {{ left:24px; right:24px; bottom:28px; max-width:none; }}
+        .splash-title {{ font-size:56px; }}
+        .splash-sub {{ font-size:16px; line-height:1.35; }}
+        .start-guide {{ width:calc(100% - 48px); bottom:138px; }}
+    }}
 
     </style>
     <div class="splash-screen">
