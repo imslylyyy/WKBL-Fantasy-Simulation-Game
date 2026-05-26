@@ -677,19 +677,35 @@ def asset_data_url(path):
     return image_data_url(path)
 
 TEAM_LOGO_FILES = {
-    "하나은행": "하나은행.jpeg",
+    "삼성생명": "삼성생명.png",
+    "신한은행": "신한은행.png",
     "우리은행": "우리은행.PNG",
-    "신한은행": "신한은행.PNG",
-    "삼성생명": "삼성생명.JPG",
+    "하나은행": "하나은행.png",
     "BNK썸": "BNK썸.PNG",
-    "KB스타즈": "KB스타즈.JPG",
+    "KB스타즈": "KB스타즈.png",
 }
 
+TEAM_LOGO_FALLBACK_EXTS = [".png", ".PNG", ".jpg", ".JPG", ".jpeg", ".JPEG"]
+
 def team_logo_data_url(team):
-    filename = TEAM_LOGO_FILES.get(canonical_team(team), "")
-    if not filename:
-        return None
-    return asset_data_url(TEAM_LOGO_DIR / filename)
+    """Return the logo data URL from assets/team_logos using the current uploaded filenames.
+
+    Primary filenames:
+    삼성생명.png, 신한은행.png, 우리은행.PNG, 하나은행.png, BNK썸.PNG, KB스타즈.png
+    """
+    canon = canonical_team(team)
+    filename = TEAM_LOGO_FILES.get(canon, "")
+    if filename:
+        logo_path = TEAM_LOGO_DIR / filename
+        if logo_path.exists():
+            return asset_data_url(logo_path)
+
+    # Fallback: useful if the file extension case changes during upload/deploy.
+    for ext in TEAM_LOGO_FALLBACK_EXTS:
+        logo_path = TEAM_LOGO_DIR / f"{canon}{ext}"
+        if logo_path.exists():
+            return asset_data_url(logo_path)
+    return None
 
 def team_logo_img_html(team, size=44):
     data = team_logo_data_url(team)
