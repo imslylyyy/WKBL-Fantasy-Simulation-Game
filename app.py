@@ -11,6 +11,8 @@ from pathlib import Path
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide")
 
+APP_VERSION = "one-game-only-v7 / no score leak / random import fixed"
+
 # =========================================================
 # WKBL Fantasy Prototype
 # Required files in the same folder:
@@ -2016,7 +2018,7 @@ with st.sidebar:
         st.info("game_results_2025_26.csv not connected yet. You can also upload raw_game_results_2025_26.txt.")
 
     st.caption("시간 기준: KST")
-    st.caption("Prototype version")
+    st.caption(APP_VERSION)
 
 header()
 nav()
