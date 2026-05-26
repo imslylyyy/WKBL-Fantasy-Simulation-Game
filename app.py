@@ -11,7 +11,7 @@ from pathlib import Path
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide")
 
-APP_VERSION = "one-game-only-v7 / no score leak / random import fixed"
+APP_VERSION = "one-game-only-v9 / All-Star once per gameweek"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -1132,6 +1132,11 @@ def initialize_fantasy_state(players_list):
         "chip_wildcard_active": False,
         "chip_allstar_available": True,
         "chip_allstar_active": False,
+        "chip_allstar_active_gameweek": None,
+        "chip_allstar_used_game_id": "",
+        "chip_allstar_used_label": "",
+        "chip_allstar_used_gameweeks": [],
+        "chip_allstar_used_labels_by_gw": {},
         "simulation_game_index": 0,
         "simulation_history": [],
         "simulation_team_scores": {team: 0.0 for team in SIMULATION_TEAMS},
@@ -1810,6 +1815,11 @@ def reset_simulation_runtime(players_list):
     st.session_state.chip_wildcard_available = True
     st.session_state.chip_allstar_active = False
     st.session_state.chip_allstar_available = True
+    st.session_state.chip_allstar_active_gameweek = None
+    st.session_state.chip_allstar_used_game_id = ""
+    st.session_state.chip_allstar_used_label = ""
+    st.session_state.chip_allstar_used_gameweeks = []
+    st.session_state.chip_allstar_used_labels_by_gw = {}
     st.session_state.simulation_ai_ready = False
 
 def initialize_ai_managers(players_list):
@@ -1950,7 +1960,20 @@ def process_one_game(game, players_list):
 
     st.session_state.chip_captain_active = False
     if st.session_state.chip_allstar_active:
+        used_gw = to_int(game.get("gameweek", st.session_state.current_transfer_gameweek), st.session_state.current_transfer_gameweek)
+        used_label = f"{game.get('date', '')} {game_match_label(game, show_score=False)}".strip()
         st.session_state.chip_allstar_active = False
+        st.session_state.chip_allstar_available = True
+        st.session_state.chip_allstar_active_gameweek = None
+        st.session_state.chip_allstar_used_game_id = game.get("game_id", "")
+        st.session_state.chip_allstar_used_label = used_label
+        used_list = list(st.session_state.get("chip_allstar_used_gameweeks", []))
+        if used_gw not in used_list:
+            used_list.append(used_gw)
+        st.session_state.chip_allstar_used_gameweeks = used_list
+        used_labels = dict(st.session_state.get("chip_allstar_used_labels_by_gw", {}))
+        used_labels[str(used_gw)] = used_label
+        st.session_state.chip_allstar_used_labels_by_gw = used_labels
 
     st.session_state.simulation_history.append({
         "game_id": game.get("game_id", ""),
@@ -2292,16 +2315,31 @@ elif page == "My Team":
         st.button("🛡️ Wildcard Disabled", use_container_width=True, disabled=True)
         st.caption("현재 규칙에서는 Gameday마다 이적이 무제한이라 Wildcard가 필요 없습니다.")
 
+        st.markdown("**⭐ All-Star**")
+        current_game_obj = current_game()
+        current_gw = to_int(current_game_obj.get("gameweek", st.session_state.current_transfer_gameweek), st.session_state.current_transfer_gameweek) if current_game_obj else st.session_state.current_transfer_gameweek
+        used_gws = set(st.session_state.get("chip_allstar_used_gameweeks", []))
+        used_this_gw = current_gw in used_gws
+
         if st.session_state.chip_allstar_active:
-            st.success("⭐ All-Star active: 다음 경기 Starting 5 총점 +20%")
-        elif st.session_state.chip_allstar_available:
-            if st.button("⭐ Activate All-Star", use_container_width=True, disabled=not bool(st.session_state.user_starting_keys)):
-                st.session_state.chip_allstar_available = False
-                st.session_state.chip_allstar_active = True
-                st.rerun()
+            active_gw = st.session_state.get("chip_allstar_active_gameweek", current_gw)
+            st.success(f"All-Star active: GW {active_gw}의 다음 경기 1경기에서 Starting 5 총점 +20%가 적용됩니다.")
+            st.caption("경기 처리 후 해당 Gameweek에서는 다시 사용할 수 없습니다.")
+        elif used_this_gw:
+            st.button("⭐ All-Star Used This GW", use_container_width=True, disabled=True)
+            used_labels = st.session_state.get("chip_allstar_used_labels_by_gw", {})
+            used_label = used_labels.get(str(current_gw), st.session_state.get("chip_allstar_used_label", ""))
+            if used_label:
+                st.caption(f"GW {current_gw} 사용 완료: {used_label}")
+            else:
+                st.caption(f"GW {current_gw}에서는 이미 All-Star를 사용했습니다. 다음 Gameweek에 다시 사용 가능합니다.")
         else:
-            st.button("⭐ All-Star Used", use_container_width=True, disabled=True)
-        st.caption("효과: 다음 경기에서 Starting 5가 얻은 총점에 20% 보너스를 줍니다.")
+            if st.button("⭐ Activate All-Star", use_container_width=True, disabled=not bool(st.session_state.user_starting_keys)):
+                st.session_state.chip_allstar_active = True
+                st.session_state.chip_allstar_available = True
+                st.session_state.chip_allstar_active_gameweek = current_gw
+                st.rerun()
+            st.caption(f"GW {current_gw}에서 1번 사용 가능합니다. 효과: 다음 경기에서 Starting 5 총점에 +20% 보너스.")
 
         st.markdown('<div class="panel"><div class="panel-title">TRANSACTIONS</div>', unsafe_allow_html=True)
         st.markdown(
@@ -2634,7 +2672,7 @@ elif page == "Help":
     - Captain은 My Team의 `SET YOUR LINE-UP` 아래 Captain 선택 박스에서 고릅니다.
     - `Activate Gameday Captain`: 다음으로 시뮬레이션하는 실제 경기 1경기에서 Captain 점수가 2배가 됩니다.
     - `Wildcard`: 현재 버전에서는 Gameday마다 이적이 무제한이라 비활성화되어 있습니다.
-    - `Activate All-Star`: 다음으로 시뮬레이션하는 실제 경기 1경기에서 내 Starting 5 총점에 +20% 보너스가 붙습니다.
+    - `Activate All-Star`: Gameweek마다 1회 사용할 수 있습니다. 다음으로 시뮬레이션하는 실제 경기 1경기에서 내 Starting 5 총점에 +20% 보너스가 붙고, 해당 GW에서는 자동으로 Used 상태가 됩니다.
     - Transfers are unlimited every Gameday. 이적 횟수 제한과 점수 페널티는 없습니다.
     - 단, 현재 Gameday에 경기하는 두 팀 선수만 로스터로 선택할 수 있습니다.
 
