@@ -20,7 +20,7 @@ import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v27.0 / in-app back-forward navigation"
+APP_VERSION = "Final Version v28.0 / WKBL logo refresh"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -1526,8 +1526,9 @@ button[kind="secondary"] {
 .v21-brand { display:flex; align-items:center; gap:14px; font-weight:900; }
 .v21-brand img { width:105px; max-height:72px; object-fit:contain; filter:drop-shadow(0 8px 18px rgba(0,0,0,.35)); }
 .v21-manager { display:flex; gap:10px; align-items:center; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.20); border-radius:18px; padding:10px 14px; font-weight:900; }
-.v21-title { font-family:'Oswald',sans-serif; font-size:82px; line-height:.90; font-weight:900; letter-spacing:-2px; text-shadow:0 10px 34px rgba(0,0,0,.48); }
-.v21-title .pink { color:#ff4fa3; display:block; }
+.v21-title { display:flex; flex-direction:column; align-items:flex-start; gap:10px; line-height:.90; text-shadow:0 10px 34px rgba(0,0,0,.48); }
+.v21-title-logo { width:min(380px, 60vw); max-width:100%; height:auto; object-fit:contain; filter:drop-shadow(0 10px 28px rgba(0,0,0,.45)); }
+.v21-title .pink { color:#ff4fa3; display:block; font-family:'Oswald',sans-serif; font-size:82px; font-weight:900; letter-spacing:-2px; }
 .v21-sub { margin-top:16px; font-size:18px; line-height:1.35; color:rgba(255,255,255,.88); font-weight:700; max-width:440px; }
 .v21-cta-row { display:flex; flex-wrap:wrap; gap:12px; margin-top:22px; }
 .v21-cta { display:inline-flex; align-items:center; gap:10px; border-radius:14px; padding:12px 20px; font-weight:900; color:white; background:linear-gradient(135deg,#ff4fa3,#e91e73); box-shadow:0 0 24px rgba(233,30,115,.45); }
@@ -1539,14 +1540,13 @@ button[kind="secondary"] {
 .v21-tile .tile-icon { font-size:26px; margin-bottom:10px; color:#ff4fa3; }
 .v21-next-logos { display:flex; align-items:center; justify-content:center; gap:10px; margin:10px 0; }
 .v21-next-logos img { width:54px; height:54px; object-fit:contain; background:rgba(255,255,255,.90); border-radius:14px; padding:5px; }
-.v21-club-footer { margin-top:24px; display:flex; align-items:center; gap:18px; background:rgba(2,6,23,.76); border:1px solid rgba(255,255,255,.16); border-radius:26px; padding:18px 22px; box-shadow:0 0 30px rgba(233,30,115,.16); }
-.v21-club-footer-title { font-family:'Oswald',sans-serif; font-size:24px; font-style:italic; font-weight:900; color:white; padding-right:20px; border-right:1px solid rgba(255,255,255,.25); }
+.v21-club-footer { margin-top:24px; display:flex; align-items:center; justify-content:center; gap:18px; background:rgba(2,6,23,.76); border:1px solid rgba(255,255,255,.16); border-radius:26px; padding:18px 22px; box-shadow:0 0 30px rgba(233,30,115,.16); flex-wrap:wrap; }
 .v21-club-footer .club-logo { background:transparent; box-shadow:none; width:90px; height:68px; border-radius:0; }
 .v21-club-footer .club-logo img { width:76px; height:62px; filter:drop-shadow(0 7px 12px rgba(0,0,0,.25)); }
 .v21-action-card { margin-top:10px; }
 .v21-action-card .stButton > button { border-radius:999px; font-weight:900; border:1px solid rgba(255,255,255,.22); background:#E91E73; color:white; }
 .v21-action-card .stButton > button:hover { background:#ff4fa3; color:white; border-color:#ff4fa3; }
-@media(max-width:1100px){ .v21-home-grid{grid-template-columns:repeat(2,1fr);} .v21-title{font-size:58px;} }
+@media(max-width:1100px){ .v21-home-grid{grid-template-columns:repeat(2,1fr);} .v21-title .pink{font-size:58px;} .v21-title-logo{width:min(300px,72vw);} }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1904,6 +1904,7 @@ def render_dashboard_home(players_list, games_list):
     home_logo_html = f'<img src="{home_logo}" alt="{home}">' if home_logo else ''
     away_logo_html = f'<img src="{away_logo}" alt="{away}">' if away_logo else ''
     wkbl_logo_html = f'<img src="{wkbl}" alt="WKBL">' if wkbl else '<div style="font-size:34px;font-weight:900;">WKBL</div>'
+    wkbl_title_logo_html = f'<img class="v21-title-logo" src="{wkbl}" alt="WKBL">' if wkbl else '<div style="font-size:72px;font-weight:900;color:white;">WKBL</div>'
 
     music_left, music_right = st.columns([4.4, 1.2])
     with music_right:
@@ -1918,7 +1919,7 @@ def render_dashboard_home(players_list, games_list):
           <div class="v21-manager">👤 {manager} 감독님, 환영합니다</div>
         </div>
       </div>
-      <div class="v21-title"><span>WKBL</span><span class="pink">Fantasy</span></div>
+      <div class="v21-title">{wkbl_title_logo_html}<span class="pink">Fantasy</span></div>
       <div class="v21-sub">Build. Compete. Win.<br>카드를 뽑고, 라인업을 만들고, 매 경기 판타지 포인트로 순위를 올리세요.</div>
     </div>
     """, unsafe_allow_html=True)
@@ -1981,7 +1982,7 @@ def render_dashboard_home(players_list, games_list):
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown(f"<div class='v21-club-footer'><div class='v21-club-footer-title'>🏀 WKBL CLUBS</div>{team_logo_strip_html()}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='v21-club-footer'>{team_logo_strip_html()}</div>", unsafe_allow_html=True)
 
 
 def sidebar_menu():
@@ -3466,6 +3467,8 @@ def handle_query_actions():
 # =========================
 def render_splash_screen():
     splash = asset_data_url(SPLASH_BG_PATH) or asset_data_url(HERO_IMAGE_PATH)
+    splash_wkbl = asset_data_url(WKBL_LOGO_PATH)
+    splash_wkbl_logo_html = f'<img class="splash-title-logo" src="{splash_wkbl}" alt="WKBL">' if splash_wkbl else '<div style="font-size:72px;font-weight:900;color:white;">WKBL</div>'
     bg = f"background-image: linear-gradient(90deg, rgba(2,6,23,.76), rgba(2,6,23,.20), rgba(2,6,23,.56)), url('{splash}');" if splash else "background: radial-gradient(circle at 50% 40%, #1d4ed8 0%, #020617 70%);"
     st.markdown(f"""
     <style>
@@ -3485,10 +3488,11 @@ def render_splash_screen():
     }}
     .splash-title {{
         position:absolute; left:58px; top:92px; transform:none;
-        font-family:'Oswald', sans-serif; color:white; font-size:72px; font-weight:900;
-        text-shadow:0 6px 30px rgba(0,0,0,.60); letter-spacing:-1px; text-align:left; line-height:.92;
+        color:white; font-weight:900; text-shadow:0 6px 30px rgba(0,0,0,.60); text-align:left; line-height:.92;
+        display:flex; flex-direction:column; align-items:flex-start; gap:10px;
     }}
-    .splash-title span {{ color:#E91E73; }}
+    .splash-title-logo {{ width:min(380px, 58vw); max-width:100%; height:auto; object-fit:contain; filter:drop-shadow(0 10px 28px rgba(0,0,0,.45)); }}
+    .splash-title span {{ color:#E91E73; font-family:'Oswald', sans-serif; font-size:72px; font-weight:900; letter-spacing:-1px; }}
     .start-guide {{
         position:absolute; left:50%; bottom:120px; transform:translateX(-50%);
         color:rgba(255,255,255,.82); font-weight:800; text-align:center;
@@ -3512,7 +3516,7 @@ def render_splash_screen():
     </style>
     <div class="splash-screen">
         <div class="splash-version">{APP_VERSION}</div>
-        <div class="splash-title">WKBL<br><span>FANTASY</span></div>
+        <div class="splash-title">{splash_wkbl_logo_html}<span>FANTASY</span></div>
         <div class="start-guide">START를 누르면 배경음악이 재생됩니다.</div>
     </div>
     """, unsafe_allow_html=True)
@@ -4318,10 +4322,12 @@ if st.session_state.get("app_phase") == "main" and st.session_state.get("current
 # =========================
 # Footer
 # =========================
-st.markdown("""
+footer_logo = asset_data_url(WKBL_LOGO_PATH)
+footer_logo_html = f'<img src="{footer_logo}" alt="WKBL" style="height:34px;width:auto;object-fit:contain;">' if footer_logo else '<div style="font-size:28px;font-weight:900;color:#064EA4;">WK<span style="color:#E91E73;">BL</span></div>'
+st.markdown(f"""
 <div class="footer">
     <div style="display:flex;gap:34px;align-items:center;flex-wrap:wrap;">
-        <div style="font-size:28px;font-weight:900;color:#064EA4;">WK<span style="color:#E91E73;">BL</span></div>
+        <div>{footer_logo_html}</div>
         <div>© 2026 WKBL Fantasy. All rights reserved.</div>
         <div>Privacy Policy</div>
         <div>Terms of Use</div>
