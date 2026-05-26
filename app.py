@@ -20,7 +20,7 @@ import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v29.0 / logo layout fix"
+APP_VERSION = "Final Version v30.0 / text title restore"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -1518,20 +1518,17 @@ button[kind="secondary"] {
 
 /* v21 dashboard home */
 .nav-wrap { background: rgba(2,6,23,.82); border:1px solid rgba(255,255,255,.12); box-shadow:0 12px 30px rgba(2,6,23,.18); }
-.v21-home { position:relative; overflow:hidden; border-radius:30px; min-height:500px; padding:34px 36px 22px; color:white; border:1px solid rgba(255,255,255,.16); box-shadow:0 26px 70px rgba(2,6,23,.28); background-size:cover; background-position:center 36%; }
+.v21-home { position:relative; overflow:hidden; border-radius:30px; min-height:500px; padding:34px 36px 34px; color:white; border:1px solid rgba(255,255,255,.16); box-shadow:0 26px 70px rgba(2,6,23,.28); background-size:cover; background-position:center 36%; }
 .v21-home:before { content:""; position:absolute; inset:0; background:linear-gradient(90deg, rgba(2,6,23,.94) 0%, rgba(2,6,23,.78) 36%, rgba(2,6,23,.38) 67%, rgba(2,6,23,.72) 100%); }
 .v21-home:after { content:""; position:absolute; left:-160px; bottom:-160px; width:460px; height:460px; border:2px solid rgba(233,30,115,.55); border-radius:50%; box-shadow:0 0 70px rgba(233,30,115,.35); }
 .v21-home > * { position:relative; z-index:2; }
-.v21-topbar { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:42px; }
+.v21-topbar { position:absolute; top:18px; right:24px; display:flex; align-items:center; justify-content:flex-end; gap:12px; flex-wrap:wrap; max-width:min(100% - 48px, 520px); margin-bottom:0; }
+.v21-hero-copy { position:absolute; left:36px; bottom:34px; max-width:520px; }
 .v21-brand { display:flex; align-items:center; gap:14px; font-weight:900; }
 .v21-brand img { width:105px; max-height:72px; object-fit:contain; filter:drop-shadow(0 8px 18px rgba(0,0,0,.35)); }
-.v21-manager { display:flex; gap:10px; align-items:center; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.20); border-radius:18px; padding:10px 14px; font-weight:900; }
-.v21-title { display:flex; flex-direction:column; align-items:flex-start; gap:10px; line-height:.90; text-shadow:0 10px 34px rgba(0,0,0,.48); }
-.v21-title-logo { width:min(230px, 36vw); max-width:100%; height:auto; object-fit:contain; filter:drop-shadow(0 10px 28px rgba(0,0,0,.45)); }
-.v21-title-row { display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap; }
-.v21-title-row .pink { line-height:.9; }
-.v21-topbar { justify-content:flex-end; }
-.v21-title .pink { color:#ff4fa3; display:block; font-family:'Oswald',sans-serif; font-size:82px; font-weight:900; letter-spacing:-2px; }
+.v21-manager { display:flex; gap:10px; align-items:center; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.20); border-radius:18px; padding:10px 14px; font-weight:900; white-space:nowrap; }
+.v21-title { font-family:'Oswald',sans-serif; font-size:82px; line-height:.90; font-weight:900; letter-spacing:-2px; text-shadow:0 10px 34px rgba(0,0,0,.48); }
+.v21-title .pink { color:#ff4fa3; display:block; }
 .v21-sub { margin-top:16px; font-size:18px; line-height:1.35; color:rgba(255,255,255,.88); font-weight:700; max-width:440px; }
 .v21-cta-row { display:flex; flex-wrap:wrap; gap:12px; margin-top:22px; }
 .v21-cta { display:inline-flex; align-items:center; gap:10px; border-radius:14px; padding:12px 20px; font-weight:900; color:white; background:linear-gradient(135deg,#ff4fa3,#e91e73); box-shadow:0 0 24px rgba(233,30,115,.45); }
@@ -1549,7 +1546,7 @@ button[kind="secondary"] {
 .v21-action-card { margin-top:10px; }
 .v21-action-card .stButton > button { border-radius:999px; font-weight:900; border:1px solid rgba(255,255,255,.22); background:#E91E73; color:white; }
 .v21-action-card .stButton > button:hover { background:#ff4fa3; color:white; border-color:#ff4fa3; }
-@media(max-width:1100px){ .v21-home-grid{grid-template-columns:repeat(2,1fr);} .v21-title .pink{font-size:58px;} .v21-title-logo{width:min(300px,72vw);} }
+@media(max-width:1100px){ .v21-home-grid{grid-template-columns:repeat(2,1fr);} .v21-title{font-size:58px;} .v21-topbar{left:24px; right:24px; max-width:none;} .v21-hero-copy{left:24px; right:24px; bottom:24px; max-width:none;} }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1906,8 +1903,6 @@ def render_dashboard_home(players_list, games_list):
         standing_lines = "<p>아직 순위가 없습니다.</p>"
     home_logo_html = f'<img src="{home_logo}" alt="{home}">' if home_logo else ''
     away_logo_html = f'<img src="{away_logo}" alt="{away}">' if away_logo else ''
-    wkbl_title_logo_html = f'<img class="v21-title-logo" src="{wkbl}" alt="WKBL">' if wkbl else '<div style="font-size:72px;font-weight:900;color:white;">WKBL</div>'
-
     music_left, music_right = st.columns([4.4, 1.2])
     with music_right:
         render_music_controls()
@@ -1915,13 +1910,13 @@ def render_dashboard_home(players_list, games_list):
     st.markdown(f"""
     <div class="v21-home" style="{bg_style}">
       <div class="v21-topbar">
-        <div style="display:flex;gap:12px;align-items:center;">
-          <div class="v21-manager">⭐ 실시간 포인트&nbsp; {my_points:.2f}</div>
-          <div class="v21-manager">👤 {manager} 감독님, 환영합니다</div>
-        </div>
+        <div class="v21-manager">⭐ 실시간 포인트&nbsp; {my_points:.2f}</div>
+        <div class="v21-manager">👤 {manager} 감독님, 환영합니다</div>
       </div>
-      <div class="v21-title v21-title-row">{wkbl_title_logo_html}<span class="pink">Fantasy</span></div>
-      <div class="v21-sub">Build. Compete. Win.<br>카드를 뽑고, 라인업을 만들고, 매 경기 판타지 포인트로 순위를 올리세요.</div>
+      <div class="v21-hero-copy">
+        <div class="v21-title"><span>WKBL</span><span class="pink">Fantasy</span></div>
+        <div class="v21-sub">Build. Compete. Win.<br>카드를 뽑고, 라인업을 만들고,<br>매 경기 판타지 포인트로 순위를 올리세요.</div>
+      </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -3468,9 +3463,7 @@ def handle_query_actions():
 # =========================
 def render_splash_screen():
     splash = asset_data_url(SPLASH_BG_PATH) or asset_data_url(HERO_IMAGE_PATH)
-    splash_wkbl = asset_data_url(WKBL_LOGO_PATH)
-    splash_wkbl_logo_html = f'<img class="splash-title-logo" src="{splash_wkbl}" alt="WKBL">' if splash_wkbl else '<div style="font-size:72px;font-weight:900;color:white;">WKBL</div>'
-    bg = f"background-image: linear-gradient(90deg, rgba(2,6,23,.76), rgba(2,6,23,.20), rgba(2,6,23,.56)), url('{splash}');" if splash else "background: radial-gradient(circle at 50% 40%, #1d4ed8 0%, #020617 70%);"
+    bg = f"background-image: linear-gradient(90deg, rgba(2,6,23,.84), rgba(2,6,23,.28), rgba(2,6,23,.60)), url('{splash}');" if splash else "background: radial-gradient(circle at 50% 40%, #1d4ed8 0%, #020617 70%);"
     st.markdown(f"""
     <style>
     .splash-screen {{
@@ -3487,37 +3480,70 @@ def render_splash_screen():
         position:absolute; top:24px; right:34px; color:rgba(255,255,255,.88);
         font-weight:800; letter-spacing:.5px; font-size:16px; text-shadow:0 3px 10px rgba(0,0,0,.35);
     }}
-    .splash-title {{
-        position:absolute; left:58px; top:88px; transform:none;
-        color:white; font-weight:900; text-shadow:0 6px 30px rgba(0,0,0,.60); text-align:left; line-height:.92;
-        display:flex; flex-direction:row; align-items:flex-end; gap:14px; flex-wrap:wrap;
-    }}
-    .splash-title-logo {{ width:min(220px, 34vw); max-width:100%; height:auto; object-fit:contain; filter:drop-shadow(0 10px 28px rgba(0,0,0,.45)); }}
-    .splash-title span {{ color:#E91E73; font-family:'Oswald', sans-serif; font-size:72px; font-weight:900; letter-spacing:-1px; }}
+    .splash-copy {
+        position:absolute; left:42px; bottom:42px; max-width:520px;
+        z-index:3;
+    }
+    .splash-title {
+        font-family:'Oswald', sans-serif; color:white; font-size:78px; font-weight:900;
+        text-shadow:0 6px 30px rgba(0,0,0,.60); letter-spacing:-1px; text-align:left; line-height:.92;
+    }
+    .splash-title span {{ color:#E91E73; }}
+    .splash-sub {
+        margin-top:18px; color:rgba(255,255,255,.92); font-weight:800; font-size:19px; line-height:1.38;
+        text-shadow:0 4px 18px rgba(0,0,0,.45);
+    }
     .start-guide {{
-        position:absolute; left:50%; bottom:120px; transform:translateX(-50%);
+        position:absolute; left:50%; bottom:136px; transform:translateX(-50%);
         color:rgba(255,255,255,.82); font-weight:800; text-align:center;
+        animation:splashFloat 2.4s ease-in-out infinite;
     }}
+    @keyframes splashGlow {
+        0% { box-shadow: 0 0 18px rgba(250,204,21,.24), 0 12px 36px rgba(0,0,0,.36); }
+        50% { box-shadow: 0 0 32px rgba(250,204,21,.48), 0 14px 44px rgba(0,0,0,.42); }
+        100% { box-shadow: 0 0 18px rgba(250,204,21,.24), 0 12px 36px rgba(0,0,0,.36); }
+    }
+    @keyframes splashFloat {
+        0% { transform: translateX(-50%) translateY(0px); }
+        50% { transform: translateX(-50%) translateY(-2px); }
+        100% { transform: translateX(-50%) translateY(0px); }
+    }
     div[data-testid="stButton"] > button:has(div), .stButton > button {{
         font-weight:900;
     }}
     .start-button-wrap {{
-        position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%); z-index: 10;
+        position: fixed; left: 50%; bottom: 52px; transform: translateX(-50%); z-index: 10;
         width: 260px;
     }}
     div[data-testid="stButton"] {{
-        position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); z-index: 30; width: 260px;
+        position: fixed; left: 50%; bottom: 58px; transform: translateX(-50%); z-index: 30; width: 280px;
     }}
     div[data-testid="stButton"] button {{
         background: linear-gradient(135deg, #111827, #020617) !important;
         color: #fff !important; border: 2px solid #facc15 !important; border-radius: 6px !important;
-        font-size: 22px !important; letter-spacing: 1px; padding: 0.9rem 1rem !important;
+        font-size: 24px !important; letter-spacing: 1px; padding: 0.95rem 1rem !important;
         box-shadow: 0 0 24px rgba(250,204,21,.38), 0 12px 36px rgba(0,0,0,.4) !important;
+        animation: splashGlow 1.9s ease-in-out infinite;
+        transition: transform .18s ease, filter .18s ease;
     }}
+    div[data-testid="stButton"] button:hover {{
+        transform: translateY(-1px);
+        filter: brightness(1.04);
+    }}
+    @media (max-width: 900px) {
+        .splash-copy { left:24px; right:24px; bottom:28px; max-width:none; }
+        .splash-title { font-size:56px; }
+        .splash-sub { font-size:16px; line-height:1.35; }
+        .start-guide { width:calc(100% - 48px); bottom:138px; }
+    }
+
     </style>
     <div class="splash-screen">
         <div class="splash-version">{APP_VERSION}</div>
-        <div class="splash-title">{splash_wkbl_logo_html}<span>FANTASY</span></div>
+        <div class="splash-copy">
+            <div class="splash-title">WKBL<br><span>FANTASY</span></div>
+            <div class="splash-sub">Build. Compete. Win.<br>카드를 뽑고, 라인업을 만들고,<br>매 경기 판타지 포인트로 순위를 올리세요.</div>
+        </div>
         <div class="start-guide">START를 누르면 배경음악이 재생됩니다.</div>
     </div>
     """, unsafe_allow_html=True)
@@ -3539,17 +3565,44 @@ def render_name_input_screen():
         min-height: 78vh; margin: -1rem -2.5rem 0 -2.5rem; padding: 56px 24px 24px;
         background-size: cover; background-position:center 36%; {bg}; position:relative; overflow:hidden;
     }}
-    .name-heading {{
-        text-align:center; color:white; text-shadow:0 6px 24px rgba(0,0,0,.55); margin-top:4px;
+    .name-screen::before {{
+        content:''; position:absolute; inset:0;
+        background: linear-gradient(90deg, rgba(2,6,23,.82), rgba(2,6,23,.34), rgba(233,30,115,.18));
+        pointer-events:none;
     }}
-    .name-title {{font-family:'Oswald',sans-serif;font-size:56px;font-weight:900;color:white;letter-spacing:-1px;}}
+    .name-copy {{
+        position:absolute; left:42px; bottom:42px; max-width:520px; z-index:2;
+    }}
+    .name-copy-title {{
+        font-family:'Oswald',sans-serif; font-size:78px; font-weight:900; color:#fff;
+        line-height:.92; letter-spacing:-1px; text-shadow:0 6px 30px rgba(0,0,0,.60);
+    }}
+    .name-copy-title .pink {{ color:#E91E73; }}
+    .name-copy-sub {{
+        margin-top:18px; color:rgba(255,255,255,.92); font-weight:800; font-size:19px; line-height:1.38;
+        text-shadow:0 4px 18px rgba(0,0,0,.45);
+    }}
+    .name-heading {{
+        position:relative; z-index:2; text-align:center; color:white; text-shadow:0 6px 24px rgba(0,0,0,.55); margin-top:4px;
+    }}
+    .name-title {{font-family:'Oswald',sans-serif;font-size:50px;font-weight:900;color:white;letter-spacing:-1px;}}
     .name-sub {{color:rgba(255,255,255,.86);font-weight:900;margin-top:8px;font-size:17px;}}
-    .name-bottom-spacer {{height:44vh;}}
+    .name-bottom-spacer {{height:36vh;}}
+    @media (max-width: 900px) {{
+        .name-copy {{ left:24px; right:24px; bottom:26px; max-width:none; }}
+        .name-copy-title {{ font-size:56px; }}
+        .name-copy-sub {{ font-size:16px; line-height:1.35; }}
+        .name-bottom-spacer {{ height:28vh; }}
+    }}
     </style>
     <div class="name-screen">
       <div class="name-heading">
         <div class="name-title">감독 로그인</div>
         <div class="name-sub">감독명과 패스워드로 진행 상황을 저장하고 이어서 플레이하세요.</div>
+      </div>
+      <div class="name-copy">
+        <div class="name-copy-title">WKBL<br><span class="pink">Fantasy</span></div>
+        <div class="name-copy-sub">Build. Compete. Win.<br>카드를 뽑고, 라인업을 만들고,<br>매 경기 판타지 포인트로 순위를 올리세요.</div>
       </div>
       <div class="name-bottom-spacer"></div>
     </div>
