@@ -57,10 +57,6 @@ elif "page" not in st.session_state:
 if "selected_player_key" not in st.session_state:
     st.session_state.selected_player_key = None
 
-if "player_name_sort" not in st.session_state:
-    # None = default price order, "asc" = Korean name order, "desc" = reverse name order
-    st.session_state.player_name_sort = None
-
 if "simulation_started" not in st.session_state:
     st.session_state.simulation_started = False
 
@@ -942,30 +938,81 @@ def header():
     """, unsafe_allow_html=True)
 
 def nav():
-    # Use Streamlit buttons instead of <a> links.
-    # This keeps navigation in the same browser tab.
-    # go_to() also writes the current page into the URL query parameter,
-    # so browser Back/Forward, including Alt + Left / Alt + Right, can move
-    # through visited pages without opening new tabs.
+    # JS navigation changes the parent window URL in the same tab.
+    # Because the URL actually changes, browser Back/Forward and
+    # Alt + Left / Alt + Right work through visited app pages.
     items = ["Home", "My Team", "Players", "Simulation", "Help"]
-    st.markdown('<div class="nav-wrap">', unsafe_allow_html=True)
-    cols = st.columns(len(items) + 1)
+    buttons = []
+    for item in items:
+        active = " active" if item == st.session_state.page else ""
+        buttons.append(
+            f"<button class='nav-button{active}' onclick='goPage({item!r})'>{item}</button>"
+        )
+    buttons.append("<button class='nav-button' onclick='goPage(\"Home\")'>Sign out</button>")
 
-    for col, item in zip(cols[:-1], items):
-        with col:
-            if item == st.session_state.page:
-                st.markdown(f'<div class="active-tab">{item}</div>', unsafe_allow_html=True)
-            else:
-                if st.button(item, key=f"topnav_{item}", use_container_width=True):
-                    go_to(item)
-                    st.rerun()
-
-    with cols[-1]:
-        if st.button("Sign out", key="topnav_signout", use_container_width=True):
-            go_to("Home")
-            st.rerun()
-
-    st.markdown('</div>', unsafe_allow_html=True)
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta charset="utf-8">
+    <style>
+        body {{
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background: transparent;
+        }}
+        .nav-wrap {{
+            background: #064EA4;
+            border-radius: 12px;
+            padding: 0.45rem;
+            box-sizing: border-box;
+            width: 100%;
+        }}
+        .nav-grid {{
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 12px;
+        }}
+        .nav-button {{
+            width: 100%;
+            border: 1px solid #e5e7eb;
+            border-radius: 9px;
+            background: white;
+            color: #111827;
+            font-weight: 900;
+            padding: 0.75rem 0.5rem;
+            font-size: 1rem;
+            cursor: pointer;
+        }}
+        .nav-button:hover {{
+            background: #eaf3ff;
+            color: #064EA4;
+        }}
+        .nav-button.active {{
+            background: #E91E73;
+            color: white;
+            border-color: #E91E73;
+        }}
+    </style>
+    <script>
+        function goPage(pageName) {{
+            const url = new URL(window.parent.location.href);
+            url.searchParams.set("page", pageName);
+            window.parent.location.href = url.toString();
+        }}
+    </script>
+    </head>
+    <body>
+        <div class="nav-wrap">
+            <div class="nav-grid">
+                {''.join(buttons)}
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    components.html(html, height=72, scrolling=False)
 
 def table_html(rows, columns):
     html = "<table style='width:100%;border-collapse:collapse;background:white;border-radius:14px;overflow:hidden;'>"
@@ -1177,6 +1224,9 @@ elif page == "Players":
     if pos_filter != "All":
         filtered = [p for p in filtered if p["position_label"] == pos_filter]
 
+    # Default order: highest initial price first.
+    filtered = sorted(filtered, key=lambda p: p["initial_price"], reverse=True)
+
     selected = None
     for p in players:
         if player_key(p) == st.session_state.selected_player_key:
@@ -1189,34 +1239,13 @@ elif page == "Players":
 
     st.markdown("### Player List")
     header_cols = st.columns([1.45, 1.05, 1.15, 1.1, 1.0, 0.65])
-
-    sort_state = st.session_state.player_name_sort
-    name_arrow = ""
-    if sort_state == "asc":
-        name_arrow = " ▲"
-    elif sort_state == "desc":
-        name_arrow = " ▼"
-
-    if header_cols[0].button(f"Name{name_arrow}", key="sort_name_button", help="Click to sort by name. Click again to reverse."):
-        if st.session_state.player_name_sort == "asc":
-            st.session_state.player_name_sort = "desc"
-        else:
-            st.session_state.player_name_sort = "asc"
-        st.rerun()
-
+    header_cols[0].markdown("**Name**")
     header_cols[1].markdown("**Team**")
     header_cols[2].markdown("**Position**")
     header_cols[3].markdown("**Fantasy Score**")
     header_cols[4].markdown("**Initial Price**")
     header_cols[5].markdown("**Data**")
     st.markdown("<hr style='margin: 0.3rem 0 0.6rem 0;'>", unsafe_allow_html=True)
-
-    if st.session_state.player_name_sort == "asc":
-        filtered = sorted(filtered, key=lambda p: (p["name"], p["team_2025_26"]))
-    elif st.session_state.player_name_sort == "desc":
-        filtered = sorted(filtered, key=lambda p: (p["name"], p["team_2025_26"]), reverse=True)
-    else:
-        filtered = sorted(filtered, key=lambda p: p["initial_price"], reverse=True)
 
     for idx, p in enumerate(filtered):
         row_cols = st.columns([1.45, 1.05, 1.15, 1.1, 1.0, 0.65])
