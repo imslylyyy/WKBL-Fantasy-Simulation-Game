@@ -20,7 +20,7 @@ import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v31.13 / season test player price charts"
+APP_VERSION = "Final Version v31.14 / clickable team logo links"
 # OLD_PREFIX_REMOVED = "Final Version v31.11 / result reveal and lineup autosave fix"
 
 # =========================================================
@@ -1463,6 +1463,18 @@ TEAM_LOGO_FILES = {
 
 TEAM_LOGO_FALLBACK_EXTS = [".png", ".PNG", ".jpg", ".JPG", ".jpeg", ".JPEG"]
 
+TEAM_LOGO_LINKS = {
+    "KB스타즈": "https://youtube.com/@kbstarsbasketball?si=6502xUMTciNX_dbe",
+    "하나은행": "https://youtube.com/channel/UC9CSBrokovIRWjwY6TVATrw?si=otv18_qFfx9v_a8G",
+    "삼성생명": "https://youtube.com/@goblueminx?si=3qUjdoHFhlwljlgz",
+    "우리은행": "https://youtube.com/@wooribasketball?si=GyiWlpf7BjxFGa0R",
+    "BNK썸": "https://youtube.com/@bnktv9784?si=HLrRzehxhQdTJx0L",
+    "신한은행": "https://youtube.com/@shsbird?si=NtTwLY7lcb7rU1QW",
+}
+
+def team_logo_link(team):
+    return TEAM_LOGO_LINKS.get(canonical_team(team), "")
+
 def team_logo_data_url(team):
     """Return the logo data URL from assets/team_logos using the current uploaded filenames.
 
@@ -1491,14 +1503,17 @@ def team_logo_img_html(team, size=44):
 
 
 def team_logo_strip_html():
-    """Render only the six club logos, with no text labels."""
+    """Render only the six club logos as clickable links, with no text labels."""
     items = []
     for team in SIMULATION_TEAMS:
         logo = team_logo_data_url(team)
+        link = team_logo_link(team)
+        title = f"{team} 공식 유튜브 열기" if link else team
+        href_attrs = f' href="{link}" target="_blank" rel="noopener noreferrer"' if link else ''
         if logo:
-            items.append(f'<div class="club-logo" title="{team}"><img src="{logo}" alt="{team}"></div>')
+            items.append(f'<a class="club-logo"{href_attrs} title="{title}"><img src="{logo}" alt="{team}"></a>')
         else:
-            items.append(f'<div class="club-logo club-logo-text" title="{team}">{team}</div>')
+            items.append(f'<a class="club-logo club-logo-text"{href_attrs} title="{title}">{team}</a>')
     return ''.join(items)
 
 # =========================
@@ -1775,7 +1790,8 @@ button[kind="secondary"] {
 .header-main-row { display:flex; align-items:center; gap:18px; }
 .wkbl-brand-logo { width:92px; max-height:70px; object-fit:contain; background:rgba(255,255,255,.78); border-radius:18px; padding:8px; box-shadow:0 10px 22px rgba(15,23,42,.14); }
 .club-strip { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin-top:18px; padding:12px 14px; background:rgba(255,255,255,.80); border:1px solid rgba(255,255,255,.92); border-radius:22px; backdrop-filter: blur(4px); }
-.club-logo { width:76px; height:76px; display:flex; align-items:center; justify-content:center; padding:6px; border-radius:22px; background:rgba(248,250,252,.92); box-shadow:0 8px 18px rgba(15,23,42,.10); }
+.club-logo { width:76px; height:76px; display:flex; align-items:center; justify-content:center; padding:6px; border-radius:22px; background:rgba(248,250,252,.92); box-shadow:0 8px 18px rgba(15,23,42,.10); text-decoration:none !important; cursor:pointer; transition:transform .15s ease, filter .15s ease; }
+.club-logo:hover { transform:translateY(-2px) scale(1.03); filter:brightness(1.04); }
 .club-logo img { width:64px; height:64px; object-fit:contain; display:block; }
 .club-logo-text { font-size:11px; font-weight:900; text-align:center; color:#334155; }
 .team-logo-fallback { font-size:10px; font-weight:900; }
