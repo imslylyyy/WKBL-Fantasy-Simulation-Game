@@ -20,7 +20,7 @@ import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v30.0 / text title restore"
+APP_VERSION = "Final Version v31.8 / cross-device login storage fix"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -56,11 +56,15 @@ EXPECTED_SCORE_ALPHA = 0.20
 
 SIMULATION_TEAMS = ["KB스타즈", "하나은행", "삼성생명", "우리은행", "BNK썸", "신한은행"]
 
-CSV_PATH = Path("players_2024_25.csv")
-IMAGE_DIR = Path("images")
-GAME_RESULTS_PATH = Path("game_results_2025_26.csv")
-RAW_GAME_RESULTS_PATH = Path("raw_game_results_2025_26.txt")
-ASSET_DIR = Path("assets")
+# Resolve every file from the app.py folder, not from a browser/session-dependent working directory.
+# This prevents PC/mobile sessions from accidentally reading different relative paths.
+BASE_DIR = Path(__file__).resolve().parent
+
+CSV_PATH = BASE_DIR / "players_2024_25.csv"
+IMAGE_DIR = BASE_DIR / "images"
+GAME_RESULTS_PATH = BASE_DIR / "game_results_2025_26.csv"
+RAW_GAME_RESULTS_PATH = BASE_DIR / "raw_game_results_2025_26.txt"
+ASSET_DIR = BASE_DIR / "assets"
 TEAM_LOGO_DIR = ASSET_DIR / "team_logos"
 HERO_IMAGE_PATH = ASSET_DIR / "hero.jpg"
 WKBL_LOGO_PATH = ASSET_DIR / "wkbl_logo.png"
@@ -68,10 +72,15 @@ SPLASH_BG_PATH = ASSET_DIR / "splash_bg.jpg"
 BGM_AUDIO_PATH = ASSET_DIR / "audio" / "bgm.mp3"
 
 # Public subscriber mode settings.
-# In this prototype, user progress is stored in a local JSON file.
-# For a real public deployment with many channel subscribers, move this to Supabase/Firebase/PostgreSQL.
-DATA_DIR = Path("data")
-USER_DB_PATH = DATA_DIR / "wkbl_fantasy_users.json"
+# In this prototype, user progress is stored in a local JSON file shared by all sessions
+# on the same server/container.  For production, set WKBL_DATA_DIR to a persistent
+# mounted folder or move this to Supabase/Firebase/PostgreSQL.
+DATA_DIR = Path(os.environ.get("WKBL_DATA_DIR", str(BASE_DIR / "data"))).expanduser().resolve()
+USER_DB_PATH = Path(os.environ.get("WKBL_USER_DB_PATH", str(DATA_DIR / "wkbl_fantasy_users.json"))).expanduser().resolve()
+LEGACY_USER_DB_PATHS = [
+    (Path.cwd() / "data" / "wkbl_fantasy_users.json").resolve(),
+    (BASE_DIR / "data" / "wkbl_fantasy_users.json").resolve(),
+]
 KST = timezone(timedelta(hours=9))
 DEFAULT_PUBLIC_FIRST_GAME_START = datetime(2026, 5, 27, 6, 30, tzinfo=KST)
 DEFAULT_PUBLIC_RESULT_DELAY_HOURS = 3.0
@@ -307,11 +316,31 @@ def get_fantasy_teams():
     return ["나의 팀"] + generate_ai_team_names(5)
 
 def user_key_from_name(name: str) -> str:
-    # Normalize visually identical names so an existing 감독명 cannot be bypassed
-    # by changing Unicode width/composition or extra spaces.
+    """Stable account key for PC/mobile input.
+
+    Mobile keyboards can insert invisible Unicode characters or slightly different
+    Hangul composition.  Normalize those away so the same visible 감독명 logs into
+    the same account on every device.
+    """
     normalized = unicodedata.normalize("NFKC", clean(name))
-    normalized = re.sub(r"\s+", " ", normalized).strip()
+    # Remove zero-width/control/format characters and all whitespace.
+    normalized = "".join(ch for ch in normalized if not unicodedata.category(ch).startswith("C"))
+    normalized = re.sub(r"\s+", "", normalized).strip()
     return normalized.casefold()
+
+
+def find_user_record(db: dict, manager_name: str):
+    """Return (user_id, record) for a manager name, including legacy keys."""
+    users = db.get("users", {}) if isinstance(db.get("users", {}), dict) else {}
+    wanted = user_key_from_name(manager_name)
+    if wanted in users:
+        return wanted, users[wanted]
+    # Backward compatibility for records saved before stronger normalization.
+    for uid, rec in users.items():
+        stored_name = rec.get("manager_name", "") if isinstance(rec, dict) else ""
+        if user_key_from_name(stored_name) == wanted:
+            return uid, rec
+    return None, None
 
 def is_admin_name(name: str) -> bool:
     return user_key_from_name(name) == user_key_from_name(ADMIN_MANAGER_NAME)
@@ -328,25 +357,79 @@ def get_admin_password() -> str:
 
 def ensure_data_dir():
     try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        USER_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
 
-def load_user_db():
-    ensure_data_dir()
-    if not USER_DB_PATH.exists():
-        return {"users": {}, "settings": {}}
+
+def _merge_user_db(base: dict, incoming: dict) -> dict:
+    if not isinstance(base, dict):
+        base = {"users": {}, "settings": {}}
+    if not isinstance(incoming, dict):
+        return base
+    base.setdefault("users", {})
+    base.setdefault("settings", {})
+    incoming_users = incoming.get("users", {}) if isinstance(incoming.get("users", {}), dict) else {}
+    incoming_settings = incoming.get("settings", {}) if isinstance(incoming.get("settings", {}), dict) else {}
+    # Keep existing primary records, but import missing legacy records.
+    for uid, rec in incoming_users.items():
+        if uid not in base["users"]:
+            base["users"][uid] = rec
+    # Newer/non-empty settings fill gaps.
+    for k, v in incoming_settings.items():
+        if k not in base["settings"] or base["settings"].get(k) in (None, ""):
+            base["settings"][k] = v
+    return base
+
+
+def _candidate_user_db_paths():
+    paths = [USER_DB_PATH] + LEGACY_USER_DB_PATHS
+    seen = set()
+    unique = []
+    for path in paths:
+        try:
+            resolved = Path(path).expanduser().resolve()
+        except Exception:
+            resolved = Path(path)
+        if str(resolved) not in seen:
+            seen.add(str(resolved))
+            unique.append(resolved)
+    return unique
+
+
+def _read_user_db_file(path: Path):
     try:
-        data = json.loads(USER_DB_PATH.read_text(encoding="utf-8"))
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
-            return {"users": {}, "settings": {}}
+            return None
         if "users" not in data or not isinstance(data.get("users"), dict):
             data["users"] = {}
         if "settings" not in data or not isinstance(data.get("settings"), dict):
             data["settings"] = {}
         return data
     except Exception:
-        return {"users": {}, "settings": {}}
+        return None
+
+
+def load_user_db():
+    ensure_data_dir()
+    merged = {"users": {}, "settings": {}}
+    found_any = False
+    for path in _candidate_user_db_paths():
+        data = _read_user_db_file(path)
+        if data is not None:
+            found_any = True
+            merged = _merge_user_db(merged, data)
+    if found_any:
+        # Migrate any legacy/current-working-directory DB into the primary path.
+        try:
+            save_user_db(merged)
+        except Exception:
+            pass
+    return merged
+
 
 def save_user_db(db):
     ensure_data_dir()
@@ -476,13 +559,22 @@ def login_existing_user(manager_name: str, password: str):
         st.session_state.page = "Admin"
         return True, "관리자 계정으로 로그인되었습니다."
 
-    user_id = user_key_from_name(manager_name)
+    requested_user_id = user_key_from_name(manager_name)
     db = load_user_db()
-    rec = db.get("users", {}).get(user_id)
+    user_id, rec = find_user_record(db, manager_name)
     if not rec:
         return False, "등록되지 않은 이름입니다."
     if not verify_password(password, rec.get("salt", ""), rec.get("password_hash", "")):
         return False, "잘못된 패스워드입니다."
+    # If the account was saved under an older key style, migrate it to the stable key.
+    if user_id != requested_user_id:
+        db.setdefault("users", {})[requested_user_id] = rec
+        try:
+            del db["users"][user_id]
+        except Exception:
+            pass
+        save_user_db(db)
+        user_id = requested_user_id
     st.session_state.current_user_id = user_id
     st.session_state.manager_name = rec.get("manager_name", manager_name)
     st.session_state.is_admin = False
@@ -504,7 +596,8 @@ def register_new_user(players_list, games_list, manager_name: str, password: str
         return False, "관리자 계정은 새 감독 등록으로 만들 수 없습니다. 로그인 / 이어하기를 이용해 주세요."
     user_id = user_key_from_name(manager_name)
     db = load_user_db()
-    if user_id in db.get("users", {}):
+    existing_uid, existing_rec = find_user_record(db, manager_name)
+    if existing_rec:
         return False, "이미 등록된 감독명입니다. 새 감독 등록으로는 접속할 수 없습니다. 로그인 / 이어하기를 이용해 주세요."
     st.session_state.current_user_id = user_id
     st.session_state.is_admin = False
