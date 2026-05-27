@@ -498,7 +498,7 @@ SAVE_STATE_KEYS = [
     "simulation_team_starting", "simulation_team_captains", "simulation_ai_ready",
     "price_history", "market_state", "auto_roster_seed", "pack_game_id", "pack_back_keys",
     "pack_front_keys", "pack_back_opened", "pack_front_opened", "main_flow_stage",
-    "bgm_enabled", "bgm_volume", "page",
+    "page",
 ]
 
 def _jsonable(value):
@@ -547,6 +547,36 @@ def save_current_user_progress():
     rec["progress"] = snapshot_progress()
     db["users"][user_id] = rec
     save_user_db(db)
+
+def logout_current_user():
+    """Log out without deleting the saved account/progress."""
+    try:
+        if st.session_state.get("current_user_id") and not st.session_state.get("is_admin"):
+            save_current_user_progress()
+    except Exception:
+        pass
+
+    keys_to_clear = set(SAVE_STATE_KEYS) | {
+        "selected_player_key", "nav_back_stack", "nav_forward_stack", "nav_last_location",
+        "current_user_id", "is_admin", "login_mode",
+        "bgm_enabled", "bgm_volume", "bgm_toggle_home", "bgm_volume_slider",
+    }
+    for key in keys_to_clear:
+        if key in st.session_state:
+            del st.session_state[key]
+
+    st.session_state.app_phase = "name_input"
+    st.session_state.manager_name = ""
+    st.session_state.current_user_id = ""
+    st.session_state.is_admin = False
+    st.session_state.login_mode = "login_or_register"
+    st.session_state.page = "Home"
+    st.session_state.selected_player_key = None
+    st.session_state.nav_back_stack = []
+    st.session_state.nav_forward_stack = []
+    st.session_state.nav_last_location = None
+    st.session_state.bgm_enabled = False
+    st.session_state.bgm_volume = 42
 
 def login_existing_user(manager_name: str, password: str):
     if is_admin_name(manager_name):
@@ -926,15 +956,6 @@ def render_bgm_player():
     </script>
     """, height=0)
 
-def render_music_controls():
-    st.markdown("<div style='text-align:right;font-weight:900;color:#64748b;'>🎵 음악 설정</div>", unsafe_allow_html=True)
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        enabled = st.toggle("음악", value=bool(st.session_state.get("bgm_enabled", False)), key="bgm_toggle_home")
-        st.session_state.bgm_enabled = enabled
-    with c2:
-        volume = st.slider("음량", 0, 100, int(st.session_state.get("bgm_volume", 42)), key="bgm_volume_slider")
-        st.session_state.bgm_volume = volume
 
 def begin_game_session(players_list, games_list, manager_name):
     """Create the user's fantasy league and enter the main game."""
@@ -2178,11 +2199,7 @@ def render_dashboard_home(players_list, games_list):
         standing_lines = "<p>아직 순위가 없습니다.</p>"
     home_logo_html = f'<img src="{home_logo}" alt="{home}">' if home_logo else ''
     away_logo_html = f'<img src="{away_logo}" alt="{away}">' if away_logo else ''
-    music_left, music_right = st.columns([4.4, 1.2])
-    with music_right:
-        render_music_controls()
-
-    nav_a, nav_b, nav_c = st.columns([1, 1, 4])
+    nav_a, nav_b, nav_spacer, nav_logout = st.columns([1, 1, 3, 1])
     with nav_a:
         if st.button("경기 일정", key="dash_schedule", use_container_width=True):
             st.session_state.page = "Schedule"
@@ -2190,6 +2207,10 @@ def render_dashboard_home(players_list, games_list):
     with nav_b:
         if st.button("가격 확인", key="dash_prices", use_container_width=True):
             st.session_state.page = "Prices"
+            st.rerun()
+    with nav_logout:
+        if st.button("로그아웃", key="dash_logout", use_container_width=True):
+            logout_current_user()
             st.rerun()
 
     st.markdown(f"""
@@ -4007,11 +4028,7 @@ def render_admin_page():
                     st.error("RESET을 정확히 입력해야 합니다.")
 
     if st.button("관리자 로그아웃", use_container_width=True):
-        st.session_state.current_user_id = ""
-        st.session_state.manager_name = ""
-        st.session_state.is_admin = False
-        st.session_state.app_phase = "name_input"
-        st.session_state.page = "Home"
+        logout_current_user()
         st.rerun()
 
 # =========================
