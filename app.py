@@ -20,7 +20,7 @@ import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v31.8 / cross-device login storage fix"
+APP_VERSION = "Final Version v31.11 / result reveal and lineup autosave fix"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -489,7 +489,7 @@ SAVE_STATE_KEYS = [
     "chip_allstar_used_gameweeks", "chip_allstar_used_labels_by_gw", "simulation_game_index",
     "simulation_history", "simulation_team_scores", "simulation_team_rosters",
     "simulation_team_starting", "simulation_team_captains", "simulation_ai_ready",
-    "price_history", "market_state", "auto_roster_seed", "pack_game_id", "pack_back_keys",
+    "price_history", "market_state", "auto_roster_seed", "submitted_lineup_game_id", "submitted_lineup_saved_at", "pack_game_id", "pack_back_keys",
     "pack_front_keys", "pack_back_opened", "pack_front_opened", "main_flow_stage",
     "page",
 ]
@@ -605,7 +605,9 @@ def login_existing_user(manager_name: str, password: str):
     # If this manager was absent while public games were completed, those games
     # must become 0-point missed games instead of remaining playable.
     try:
-        apply_missed_games_to_session(players, games_2025_26)
+        # Do not auto-skip the current result-open game for returning users.
+        # They should be able to press "결과 확인" and apply the submitted line-up.
+        apply_missed_games_before_current_index(players, games_2025_26)
         save_current_user_progress()
     except Exception:
         pass
@@ -911,6 +913,52 @@ def apply_missed_games_to_session(players_list, games_list, target_index: int | 
     st.session_state.simulation_team_scores = scores
     update_league_table_from_scores()
     return added
+
+def apply_missed_games_before_current_index(players_list, games_list) -> int:
+    """For returning users, only back-fill genuinely past unrecorded games as 0.
+
+    Important: the current ``simulation_game_index`` is the next game the user
+    still needs to reveal.  Even if that game's result-open time has already
+    passed, we must not mark it missed during login, because that skips the
+    user's "결과 확인" step and can erase a valid submitted line-up.
+    """
+    manager = st.session_state.get("simulation_user_team") or st.session_state.get("manager_name", "")
+    if not manager:
+        return 0
+
+    completed_count = public_completed_game_count(games_list)
+    current_index = int(st.session_state.get("simulation_game_index", 0) or 0)
+    target_index = max(0, min(current_index, completed_count, len(games_list or [])))
+
+    history = st.session_state.get("simulation_history", [])
+    if not isinstance(history, list):
+        history = []
+
+    added = 0
+    for i in range(target_index):
+        game = games_list[i]
+        if not _history_has_game(history, game):
+            history.append(missed_game_record(game, manager))
+            added += 1
+    st.session_state.simulation_history = history
+
+    scores = st.session_state.get("simulation_team_scores", {})
+    if not isinstance(scores, dict):
+        scores = {}
+    scores.setdefault(manager, 0.0)
+    st.session_state.simulation_team_scores = scores
+    update_league_table_from_scores()
+    return added
+
+
+def mark_lineup_submitted_for_current_game():
+    """Remember that the current game's line-up was intentionally submitted."""
+    try:
+        st.session_state.submitted_lineup_game_id = current_game_id()
+    except Exception:
+        st.session_state.submitted_lineup_game_id = st.session_state.get("pack_game_id", "")
+    st.session_state.submitted_lineup_saved_at = datetime.now(KST).isoformat()
+
 
 def user_fantasy_team_name():
     return st.session_state.get("manager_name", "나의 팀") or "나의 팀"
@@ -2365,6 +2413,8 @@ def initialize_fantasy_state(players_list):
         "simulation_ai_ready": False,
         "price_history": {},
         "auto_roster_seed": 0,
+        "submitted_lineup_game_id": "",
+        "submitted_lineup_saved_at": "",
         "pack_game_id": "",
         "pack_back_keys": [],
         "pack_front_keys": [],
@@ -3579,7 +3629,9 @@ def save_pack_roster_if_valid(players_list):
     if st.session_state.user_captain_key not in st.session_state.user_starting_keys:
         st.session_state.user_captain_key = st.session_state.user_starting_keys[0] if st.session_state.user_starting_keys else None
     sync_user_lineup_to_simulation()
+    mark_lineup_submitted_for_current_game()
     update_league_table_from_scores()
+    save_current_user_progress()
     return True, report
 
 def quest_map_html(games, current_index):
@@ -3692,6 +3744,8 @@ def render_lineup_swap_controls(roster_keys, starting_keys, players_list, key_pr
                 if st.session_state.user_captain_key == starter_pick:
                     st.session_state.user_captain_key = bench_pick
                 sync_user_lineup_to_simulation()
+                mark_lineup_submitted_for_current_game()
+                save_current_user_progress()
                 st.success("선발과 벤치를 교체했습니다.")
                 st.rerun()
             else:
@@ -4133,6 +4187,8 @@ elif page == "My Team":
                     if st.session_state.user_starting_keys:
                         st.session_state.user_captain_key = st.session_state.user_starting_keys[0]
                     sync_user_lineup_to_simulation()
+                    mark_lineup_submitted_for_current_game()
+                    save_current_user_progress()
                     st.rerun()
 
                 req_b, req_f = formation_requirements(st.session_state.user_formation)
@@ -4156,6 +4212,8 @@ elif page == "My Team":
                     if st.session_state.user_captain_key not in proposed_starting:
                         st.session_state.user_captain_key = proposed_starting[0] if proposed_starting else None
                     sync_user_lineup_to_simulation()
+                    mark_lineup_submitted_for_current_game()
+                    save_current_user_progress()
                     st.success("Starting 5를 저장했습니다.")
                     st.rerun()
 
@@ -4163,12 +4221,20 @@ elif page == "My Team":
                 if display_starting_keys:
                     if st.session_state.user_captain_key not in display_starting_keys:
                         st.session_state.user_captain_key = display_starting_keys[0]
-                    st.session_state.user_captain_key = st.selectbox(
+                    old_captain_key = st.session_state.get("user_captain_key")
+                    selected_captain_key = st.selectbox(
                         "Captain 선택",
                         options=display_starting_keys,
                         index=display_starting_keys.index(st.session_state.user_captain_key),
                         format_func=lambda k: label_for_key(k, players),
                     )
+                    if selected_captain_key != old_captain_key:
+                        st.session_state.user_captain_key = selected_captain_key
+                        sync_user_lineup_to_simulation()
+                        mark_lineup_submitted_for_current_game()
+                        save_current_user_progress()
+                        st.rerun()
+                    st.session_state.user_captain_key = selected_captain_key
 
                 # All-Star is decided only after the line-up is effectively confirmed.
                 current_gw = next_game_obj.get("gameweek", st.session_state.current_transfer_gameweek) if next_game_obj else st.session_state.current_transfer_gameweek
@@ -4189,12 +4255,16 @@ elif page == "My Team":
                             st.session_state.chip_allstar_active = False
                             st.session_state.chip_allstar_available = True
                             st.session_state.chip_allstar_active_gameweek = None
+                            mark_lineup_submitted_for_current_game()
+                            save_current_user_progress()
                             st.rerun()
                     else:
                         if st.button("All-Star 사용", key="lineup_allstar_activate", use_container_width=True, disabled=used_allstar or not start_report["valid"]):
                             st.session_state.chip_allstar_active = True
                             st.session_state.chip_allstar_available = False
                             st.session_state.chip_allstar_active_gameweek = current_gw
+                            mark_lineup_submitted_for_current_game()
+                            save_current_user_progress()
                             st.rerun()
 
                 st.markdown('<div class="court"><b style="color:#064EA4;">STARTING 5</b><div class="reveal-note">선발은 100% 반영, 캡틴은 자동 2배, 벤치는 50% 반영됩니다.</div>', unsafe_allow_html=True)
@@ -4460,7 +4530,10 @@ elif page == "Simulation":
                     save_current_user_progress()
                     st.rerun()
                 if not readiness["valid"]:
-                    st.warning("라인업을 제출하지 않았거나 조건이 맞지 않습니다. 결과 공개 후 이 경기는 0점 처리됩니다.")
+                    st.warning("현재 저장된 라인업이 없거나 조건이 맞지 않습니다. 결과 공개 후 이 상태로 확인하면 이 경기는 0점 처리됩니다.")
+                    submitted_gid = st.session_state.get("submitted_lineup_game_id", "")
+                    if submitted_gid and submitted_gid != g.get("game_id", ""):
+                        st.caption(f"최근 제출 라인업은 다른 경기({submitted_gid}) 기준입니다. 현재 경기 라인업을 다시 저장해 주세요.")
                     for msg in readiness["errors"]:
                         st.caption(msg)
                 elif not status["can_reveal"]:
