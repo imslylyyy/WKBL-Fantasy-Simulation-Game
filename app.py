@@ -20,7 +20,7 @@ import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v29.0 / logo layout fix"
+APP_VERSION = "Final Version v31.8 / cross-device login storage fix"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -56,22 +56,30 @@ EXPECTED_SCORE_ALPHA = 0.20
 
 SIMULATION_TEAMS = ["KB스타즈", "하나은행", "삼성생명", "우리은행", "BNK썸", "신한은행"]
 
-CSV_PATH = Path("players_2024_25.csv")
-IMAGE_DIR = Path("images")
-GAME_RESULTS_PATH = Path("game_results_2025_26.csv")
-RAW_GAME_RESULTS_PATH = Path("raw_game_results_2025_26.txt")
-ASSET_DIR = Path("assets")
+# Resolve every file from the app.py folder, not from a browser/session-dependent working directory.
+# This prevents PC/mobile sessions from accidentally reading different relative paths.
+BASE_DIR = Path(__file__).resolve().parent
+
+CSV_PATH = BASE_DIR / "players_2024_25.csv"
+IMAGE_DIR = BASE_DIR / "images"
+GAME_RESULTS_PATH = BASE_DIR / "game_results_2025_26.csv"
+RAW_GAME_RESULTS_PATH = BASE_DIR / "raw_game_results_2025_26.txt"
+ASSET_DIR = BASE_DIR / "assets"
 TEAM_LOGO_DIR = ASSET_DIR / "team_logos"
 HERO_IMAGE_PATH = ASSET_DIR / "hero.jpg"
 WKBL_LOGO_PATH = ASSET_DIR / "wkbl_logo.png"
 SPLASH_BG_PATH = ASSET_DIR / "splash_bg.jpg"
-BGM_AUDIO_PATH = ASSET_DIR / "audio" / "bgm.mp3"
 
 # Public subscriber mode settings.
-# In this prototype, user progress is stored in a local JSON file.
-# For a real public deployment with many channel subscribers, move this to Supabase/Firebase/PostgreSQL.
-DATA_DIR = Path("data")
-USER_DB_PATH = DATA_DIR / "wkbl_fantasy_users.json"
+# In this prototype, user progress is stored in a local JSON file shared by all sessions
+# on the same server/container.  For production, set WKBL_DATA_DIR to a persistent
+# mounted folder or move this to Supabase/Firebase/PostgreSQL.
+DATA_DIR = Path(os.environ.get("WKBL_DATA_DIR", str(BASE_DIR / "data"))).expanduser().resolve()
+USER_DB_PATH = Path(os.environ.get("WKBL_USER_DB_PATH", str(DATA_DIR / "wkbl_fantasy_users.json"))).expanduser().resolve()
+LEGACY_USER_DB_PATHS = [
+    (Path.cwd() / "data" / "wkbl_fantasy_users.json").resolve(),
+    (BASE_DIR / "data" / "wkbl_fantasy_users.json").resolve(),
+]
 KST = timezone(timedelta(hours=9))
 DEFAULT_PUBLIC_FIRST_GAME_START = datetime(2026, 5, 27, 6, 30, tzinfo=KST)
 DEFAULT_PUBLIC_RESULT_DELAY_HOURS = 3.0
@@ -117,12 +125,6 @@ if "is_admin" not in st.session_state:
 
 if "fantasy_team_names" not in st.session_state:
     st.session_state.fantasy_team_names = []
-
-if "bgm_enabled" not in st.session_state:
-    st.session_state.bgm_enabled = False
-
-if "bgm_volume" not in st.session_state:
-    st.session_state.bgm_volume = 42
 
 if "page" not in st.session_state:
     st.session_state.page = "Home"
@@ -307,11 +309,31 @@ def get_fantasy_teams():
     return ["나의 팀"] + generate_ai_team_names(5)
 
 def user_key_from_name(name: str) -> str:
-    # Normalize visually identical names so an existing 감독명 cannot be bypassed
-    # by changing Unicode width/composition or extra spaces.
+    """Stable account key for PC/mobile input.
+
+    Mobile keyboards can insert invisible Unicode characters or slightly different
+    Hangul composition.  Normalize those away so the same visible 감독명 logs into
+    the same account on every device.
+    """
     normalized = unicodedata.normalize("NFKC", clean(name))
-    normalized = re.sub(r"\s+", " ", normalized).strip()
+    # Remove zero-width/control/format characters and all whitespace.
+    normalized = "".join(ch for ch in normalized if not unicodedata.category(ch).startswith("C"))
+    normalized = re.sub(r"\s+", "", normalized).strip()
     return normalized.casefold()
+
+
+def find_user_record(db: dict, manager_name: str):
+    """Return (user_id, record) for a manager name, including legacy keys."""
+    users = db.get("users", {}) if isinstance(db.get("users", {}), dict) else {}
+    wanted = user_key_from_name(manager_name)
+    if wanted in users:
+        return wanted, users[wanted]
+    # Backward compatibility for records saved before stronger normalization.
+    for uid, rec in users.items():
+        stored_name = rec.get("manager_name", "") if isinstance(rec, dict) else ""
+        if user_key_from_name(stored_name) == wanted:
+            return uid, rec
+    return None, None
 
 def is_admin_name(name: str) -> bool:
     return user_key_from_name(name) == user_key_from_name(ADMIN_MANAGER_NAME)
@@ -328,25 +350,79 @@ def get_admin_password() -> str:
 
 def ensure_data_dir():
     try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        USER_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
 
-def load_user_db():
-    ensure_data_dir()
-    if not USER_DB_PATH.exists():
-        return {"users": {}, "settings": {}}
+
+def _merge_user_db(base: dict, incoming: dict) -> dict:
+    if not isinstance(base, dict):
+        base = {"users": {}, "settings": {}}
+    if not isinstance(incoming, dict):
+        return base
+    base.setdefault("users", {})
+    base.setdefault("settings", {})
+    incoming_users = incoming.get("users", {}) if isinstance(incoming.get("users", {}), dict) else {}
+    incoming_settings = incoming.get("settings", {}) if isinstance(incoming.get("settings", {}), dict) else {}
+    # Keep existing primary records, but import missing legacy records.
+    for uid, rec in incoming_users.items():
+        if uid not in base["users"]:
+            base["users"][uid] = rec
+    # Newer/non-empty settings fill gaps.
+    for k, v in incoming_settings.items():
+        if k not in base["settings"] or base["settings"].get(k) in (None, ""):
+            base["settings"][k] = v
+    return base
+
+
+def _candidate_user_db_paths():
+    paths = [USER_DB_PATH] + LEGACY_USER_DB_PATHS
+    seen = set()
+    unique = []
+    for path in paths:
+        try:
+            resolved = Path(path).expanduser().resolve()
+        except Exception:
+            resolved = Path(path)
+        if str(resolved) not in seen:
+            seen.add(str(resolved))
+            unique.append(resolved)
+    return unique
+
+
+def _read_user_db_file(path: Path):
     try:
-        data = json.loads(USER_DB_PATH.read_text(encoding="utf-8"))
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
-            return {"users": {}, "settings": {}}
+            return None
         if "users" not in data or not isinstance(data.get("users"), dict):
             data["users"] = {}
         if "settings" not in data or not isinstance(data.get("settings"), dict):
             data["settings"] = {}
         return data
     except Exception:
-        return {"users": {}, "settings": {}}
+        return None
+
+
+def load_user_db():
+    ensure_data_dir()
+    merged = {"users": {}, "settings": {}}
+    found_any = False
+    for path in _candidate_user_db_paths():
+        data = _read_user_db_file(path)
+        if data is not None:
+            found_any = True
+            merged = _merge_user_db(merged, data)
+    if found_any:
+        # Migrate any legacy/current-working-directory DB into the primary path.
+        try:
+            save_user_db(merged)
+        except Exception:
+            pass
+    return merged
+
 
 def save_user_db(db):
     ensure_data_dir()
@@ -415,7 +491,7 @@ SAVE_STATE_KEYS = [
     "simulation_team_starting", "simulation_team_captains", "simulation_ai_ready",
     "price_history", "market_state", "auto_roster_seed", "pack_game_id", "pack_back_keys",
     "pack_front_keys", "pack_back_opened", "pack_front_opened", "main_flow_stage",
-    "bgm_enabled", "bgm_volume", "page",
+    "page",
 ]
 
 def _jsonable(value):
@@ -465,6 +541,33 @@ def save_current_user_progress():
     db["users"][user_id] = rec
     save_user_db(db)
 
+def logout_current_user():
+    """Log out without deleting the saved account/progress."""
+    try:
+        if st.session_state.get("current_user_id") and not st.session_state.get("is_admin"):
+            save_current_user_progress()
+    except Exception:
+        pass
+
+    keys_to_clear = set(SAVE_STATE_KEYS) | {
+        "selected_player_key", "nav_back_stack", "nav_forward_stack", "nav_last_location",
+        "current_user_id", "is_admin", "login_mode",
+    }
+    for key in keys_to_clear:
+        if key in st.session_state:
+            del st.session_state[key]
+
+    st.session_state.app_phase = "name_input"
+    st.session_state.manager_name = ""
+    st.session_state.current_user_id = ""
+    st.session_state.is_admin = False
+    st.session_state.login_mode = "login_or_register"
+    st.session_state.page = "Home"
+    st.session_state.selected_player_key = None
+    st.session_state.nav_back_stack = []
+    st.session_state.nav_forward_stack = []
+    st.session_state.nav_last_location = None
+
 def login_existing_user(manager_name: str, password: str):
     if is_admin_name(manager_name):
         if password != get_admin_password():
@@ -476,13 +579,22 @@ def login_existing_user(manager_name: str, password: str):
         st.session_state.page = "Admin"
         return True, "관리자 계정으로 로그인되었습니다."
 
-    user_id = user_key_from_name(manager_name)
+    requested_user_id = user_key_from_name(manager_name)
     db = load_user_db()
-    rec = db.get("users", {}).get(user_id)
+    user_id, rec = find_user_record(db, manager_name)
     if not rec:
         return False, "등록되지 않은 이름입니다."
     if not verify_password(password, rec.get("salt", ""), rec.get("password_hash", "")):
         return False, "잘못된 패스워드입니다."
+    # If the account was saved under an older key style, migrate it to the stable key.
+    if user_id != requested_user_id:
+        db.setdefault("users", {})[requested_user_id] = rec
+        try:
+            del db["users"][user_id]
+        except Exception:
+            pass
+        save_user_db(db)
+        user_id = requested_user_id
     st.session_state.current_user_id = user_id
     st.session_state.manager_name = rec.get("manager_name", manager_name)
     st.session_state.is_admin = False
@@ -490,6 +602,13 @@ def login_existing_user(manager_name: str, password: str):
     st.session_state.is_admin = False
     st.session_state.app_phase = "main"
     st.session_state.page = st.session_state.get("page") or "Home"
+    # If this manager was absent while public games were completed, those games
+    # must become 0-point missed games instead of remaining playable.
+    try:
+        apply_missed_games_to_session(players, games_2025_26)
+        save_current_user_progress()
+    except Exception:
+        pass
     return True, "로그인되었습니다."
 
 def register_new_user(players_list, games_list, manager_name: str, password: str):
@@ -497,7 +616,8 @@ def register_new_user(players_list, games_list, manager_name: str, password: str
         return False, "관리자 계정은 새 감독 등록으로 만들 수 없습니다. 로그인 / 이어하기를 이용해 주세요."
     user_id = user_key_from_name(manager_name)
     db = load_user_db()
-    if user_id in db.get("users", {}):
+    existing_uid, existing_rec = find_user_record(db, manager_name)
+    if existing_rec:
         return False, "이미 등록된 감독명입니다. 새 감독 등록으로는 접속할 수 없습니다. 로그인 / 이어하기를 이용해 주세요."
     st.session_state.current_user_id = user_id
     st.session_state.is_admin = False
@@ -529,6 +649,59 @@ def global_leaderboard_rows(include_current=True):
     for i, row in enumerate(rows, start=1):
         row["Rank"] = i
     return rows
+
+def _same_result_game(a: dict, b: dict) -> bool:
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return False
+    a_id, b_id = str(a.get("game_id", "")).strip(), str(b.get("game_id", "")).strip()
+    if a_id and b_id and a_id == b_id:
+        return True
+    keys = ["date", "time", "gameweek", "day", "match"]
+    return all(str(a.get(k, "")).strip() == str(b.get(k, "")).strip() for k in keys)
+
+def participant_result_records(reference_item: dict, include_current=True):
+    """Return one row per real registered participant for this completed game.
+
+    Results should not show the temporary AI teams generated inside each user's
+    private simulation.  This function scans the saved user database and picks
+    only each registered manager's own result/lineup for the same game.
+    """
+    if include_current and st.session_state.get("current_user_id"):
+        save_current_user_progress()
+    db = load_user_db()
+    records = []
+    for uid, rec in db.get("users", {}).items():
+        progress = rec.get("progress", {}) if isinstance(rec.get("progress", {}), dict) else {}
+        manager = rec.get("manager_name") or progress.get("manager_name") or uid
+        history = progress.get("simulation_history", []) if isinstance(progress.get("simulation_history", []), list) else []
+        matched = None
+        for item in history:
+            if _same_result_game(item, reference_item):
+                matched = item
+                break
+        if not matched:
+            records.append({
+                "team": manager,
+                "points": None,
+                "status": "미확인",
+                "lineup": None,
+                "updated": rec.get("updated_at", ""),
+            })
+            continue
+        team_name = progress.get("simulation_user_team") or manager
+        points_map = matched.get("team_points", {}) if isinstance(matched.get("team_points", {}), dict) else {}
+        points = points_map.get(team_name, points_map.get(manager, 0.0))
+        lineups = matched.get("lineups", {}) if isinstance(matched.get("lineups", {}), dict) else {}
+        lineup = lineups.get(team_name) or lineups.get(manager)
+        records.append({
+            "team": manager,
+            "points": round(float(points or 0.0), 2),
+            "status": "미참가/0점" if matched.get("missed") else "완료",
+            "lineup": lineup,
+            "updated": rec.get("updated_at", ""),
+        })
+    records.sort(key=lambda r: (r["points"] is None, -(r["points"] or 0.0), str(r["team"])))
+    return records
 
 
 def delete_user_by_id(user_id: str):
@@ -617,49 +790,130 @@ def public_game_status(game_index: int, at: datetime | None = None):
         "can_reveal": True,
     }
 
+
+
+def public_completed_game_count(games_list, at: datetime | None = None) -> int:
+    """How many public games have already reached the result-open time."""
+    at = at or now_kst()
+    count = 0
+    for i, _game in enumerate(games_list or []):
+        if at >= public_game_result_time(i):
+            count = i + 1
+        else:
+            break
+    return min(count, len(games_list or []))
+
+
+def _history_has_game(history, game: dict) -> bool:
+    reference = {
+        "game_id": game.get("game_id", ""),
+        "date": game.get("date", ""),
+        "time": game.get("time", ""),
+        "gameweek": game.get("gameweek", ""),
+        "day": game.get("day", ""),
+        "match": game_match_label(game, show_score=True),
+    }
+    return any(_same_result_game(item, reference) for item in history if isinstance(item, dict))
+
+
+def missed_game_record(game: dict, manager_name: str) -> dict:
+    """A zero-point record for games a late/absent manager missed."""
+    return {
+        "game_id": game.get("game_id", ""),
+        "date": game.get("date", ""),
+        "time": game.get("time", ""),
+        "gameweek": game.get("gameweek", ""),
+        "day": game.get("day", ""),
+        "match": game_match_label(game, show_score=True),
+        "team_points": {manager_name: 0.0},
+        "lineups": {
+            manager_name: {
+                "captain": "미제출",
+                "starting": [],
+                "bench": [],
+                "status": "미참가/0점",
+            }
+        },
+        "allstar_applied": False,
+        "price_changes": [],
+        "missed": True,
+        "missed_reason": "늦은 등록 또는 라인업 미제출로 0점 처리",
+    }
+
+
+def set_roster_for_game_index(players_list, games_list, game_index: int, seed: int | None = None):
+    """Prepare an editable roster from the current target game's two WKBL teams."""
+    if not games_list or game_index >= len(games_list):
+        pool = players_list
+        game_id = ""
+    else:
+        game = games_list[game_index]
+        allowed = game_allowed_teams(game)
+        pool = [p for p in players_list if not allowed or p.get("team_2025_26") in allowed]
+        game_id = str(game.get("game_id", ""))
+    if seed is None:
+        seed = random.randint(100, 9999)
+    st.session_state.user_roster_keys = generate_auto_roster(pool, seed=seed)
+    st.session_state.roster_working_keys = list(st.session_state.user_roster_keys)
+    st.session_state.user_starting_keys = auto_starting_keys(
+        st.session_state.user_roster_keys,
+        players_list,
+        st.session_state.get("user_formation", "2 Back Court / 3 Front Court"),
+    )
+    st.session_state.user_captain_key = st.session_state.user_starting_keys[0] if st.session_state.user_starting_keys else None
+    st.session_state.pack_game_id = game_id
+    st.session_state.pack_back_keys = []
+    st.session_state.pack_front_keys = []
+    st.session_state.pack_back_opened = False
+    st.session_state.pack_front_opened = False
+    st.session_state.main_flow_stage = "pack_lobby"
+
+
+def apply_missed_games_to_session(players_list, games_list, target_index: int | None = None, reset_roster_if_advanced: bool = True) -> int:
+    """Mark every already-result-open game before target_index as 0 if this manager has no record.
+
+    This prevents late registrants from back-playing completed games.
+    """
+    manager = st.session_state.get("simulation_user_team") or st.session_state.get("manager_name", "")
+    if not manager:
+        return 0
+    target_index = public_completed_game_count(games_list) if target_index is None else int(target_index)
+    target_index = max(0, min(target_index, len(games_list or [])))
+
+    history = st.session_state.get("simulation_history", [])
+    if not isinstance(history, list):
+        history = []
+    added = 0
+    for i in range(target_index):
+        game = games_list[i]
+        if not _history_has_game(history, game):
+            history.append(missed_game_record(game, manager))
+            added += 1
+    st.session_state.simulation_history = history
+
+    current_index = int(st.session_state.get("simulation_game_index", 0) or 0)
+    if current_index < target_index:
+        st.session_state.simulation_game_index = target_index
+        st.session_state.simulation_game_no = target_index + 1
+        if target_index < len(games_list or []):
+            st.session_state.current_transfer_gameweek = games_list[target_index].get(
+                "gameweek", st.session_state.get("current_transfer_gameweek", 1)
+            )
+            if reset_roster_if_advanced:
+                set_roster_for_game_index(players_list, games_list, target_index)
+        else:
+            st.session_state.main_flow_stage = "locked_view"
+
+    scores = st.session_state.get("simulation_team_scores", {})
+    if not isinstance(scores, dict):
+        scores = {}
+    scores.setdefault(manager, 0.0)
+    st.session_state.simulation_team_scores = scores
+    update_league_table_from_scores()
+    return added
+
 def user_fantasy_team_name():
     return st.session_state.get("manager_name", "나의 팀") or "나의 팀"
-
-def audio_data_url(path):
-    path = Path(path)
-    if not path.exists():
-        return None
-    data = base64.b64encode(path.read_bytes()).decode("utf-8")
-    mime = mimetypes.guess_type(str(path))[0] or "audio/mpeg"
-    return f"data:{mime};base64,{data}"
-
-def render_bgm_player():
-    """Play one looping BGM after the START button has been clicked, if assets/audio/bgm.mp3 exists."""
-    if not st.session_state.get("bgm_enabled"):
-        return
-    src = audio_data_url(BGM_AUDIO_PATH)
-    if not src:
-        return
-    volume = max(0, min(100, int(st.session_state.get("bgm_volume", 42)))) / 100
-    components.html(f"""
-    <audio id="wkbl-bgm" autoplay loop playsinline>
-        <source src="{src}" type="audio/mpeg">
-    </audio>
-    <script>
-    const audio = document.getElementById('wkbl-bgm');
-    if (audio) {{
-        audio.volume = {volume:.2f};
-        audio.loop = true;
-        const p = audio.play();
-        if (p !== undefined) {{ p.catch(() => {{}}); }}
-    }}
-    </script>
-    """, height=0)
-
-def render_music_controls():
-    st.markdown("<div style='text-align:right;font-weight:900;color:#64748b;'>🎵 음악 설정</div>", unsafe_allow_html=True)
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        enabled = st.toggle("음악", value=bool(st.session_state.get("bgm_enabled", False)), key="bgm_toggle_home")
-        st.session_state.bgm_enabled = enabled
-    with c2:
-        volume = st.slider("음량", 0, 100, int(st.session_state.get("bgm_volume", 42)), key="bgm_volume_slider")
-        st.session_state.bgm_volume = volume
 
 def begin_game_session(players_list, games_list, manager_name):
     """Create the user's fantasy league and enter the main game."""
@@ -667,20 +921,20 @@ def begin_game_session(players_list, games_list, manager_name):
     st.session_state.fantasy_team_names = [st.session_state.manager_name] + generate_ai_team_names(5)
     st.session_state.page = "Home"
 
-    # First gameday roster is generated only from the first game's two real WKBL teams.
-    if games_list:
-        start_allowed = game_allowed_teams(games_list[0])
-        start_pool = [p for p in players_list if not start_allowed or p.get("team_2025_26") in start_allowed]
-    else:
-        start_pool = players_list
-
-    st.session_state.user_roster_keys = generate_auto_roster(start_pool, seed=random.randint(100, 9999))
-    st.session_state.roster_working_keys = list(st.session_state.user_roster_keys)
-    st.session_state.user_starting_keys = auto_starting_keys(st.session_state.user_roster_keys, players_list, st.session_state.user_formation)
-    st.session_state.user_captain_key = st.session_state.user_starting_keys[0] if st.session_state.user_starting_keys else None
-
     reset_simulation_runtime(players_list)
     start_simulation(st.session_state.manager_name)
+
+    # Public league rule: a manager who registers late cannot play completed games.
+    # Those earlier games are immediately saved as missed/0-point results, and the
+    # manager starts from the current public game.
+    target_index = public_completed_game_count(games_list)
+    apply_missed_games_to_session(players_list, games_list, target_index=target_index, reset_roster_if_advanced=False)
+    if target_index < len(games_list or []):
+        set_roster_for_game_index(players_list, games_list, target_index)
+    else:
+        set_roster_for_game_index(players_list, games_list, 0)
+        st.session_state.main_flow_stage = "locked_view"
+
     initialize_ai_managers(players_list)
     update_league_table_from_scores()
     st.session_state.simulation_started = True
@@ -1518,20 +1772,17 @@ button[kind="secondary"] {
 
 /* v21 dashboard home */
 .nav-wrap { background: rgba(2,6,23,.82); border:1px solid rgba(255,255,255,.12); box-shadow:0 12px 30px rgba(2,6,23,.18); }
-.v21-home { position:relative; overflow:hidden; border-radius:30px; min-height:500px; padding:34px 36px 22px; color:white; border:1px solid rgba(255,255,255,.16); box-shadow:0 26px 70px rgba(2,6,23,.28); background-size:cover; background-position:center 36%; }
+.v21-home { position:relative; overflow:hidden; border-radius:30px; min-height:500px; padding:34px 36px 34px; color:white; border:1px solid rgba(255,255,255,.16); box-shadow:0 26px 70px rgba(2,6,23,.28); background-size:cover; background-position:center 36%; }
 .v21-home:before { content:""; position:absolute; inset:0; background:linear-gradient(90deg, rgba(2,6,23,.94) 0%, rgba(2,6,23,.78) 36%, rgba(2,6,23,.38) 67%, rgba(2,6,23,.72) 100%); }
 .v21-home:after { content:""; position:absolute; left:-160px; bottom:-160px; width:460px; height:460px; border:2px solid rgba(233,30,115,.55); border-radius:50%; box-shadow:0 0 70px rgba(233,30,115,.35); }
 .v21-home > * { position:relative; z-index:2; }
-.v21-topbar { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:42px; }
+.v21-topbar { position:absolute; top:18px; right:24px; display:flex; align-items:center; justify-content:flex-end; gap:12px; flex-wrap:wrap; max-width:min(100% - 48px, 520px); margin-bottom:0; }
+.v21-hero-copy { position:absolute; left:36px; bottom:34px; max-width:520px; }
 .v21-brand { display:flex; align-items:center; gap:14px; font-weight:900; }
 .v21-brand img { width:105px; max-height:72px; object-fit:contain; filter:drop-shadow(0 8px 18px rgba(0,0,0,.35)); }
-.v21-manager { display:flex; gap:10px; align-items:center; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.20); border-radius:18px; padding:10px 14px; font-weight:900; }
-.v21-title { display:flex; flex-direction:column; align-items:flex-start; gap:10px; line-height:.90; text-shadow:0 10px 34px rgba(0,0,0,.48); }
-.v21-title-logo { width:min(230px, 36vw); max-width:100%; height:auto; object-fit:contain; filter:drop-shadow(0 10px 28px rgba(0,0,0,.45)); }
-.v21-title-row { display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap; }
-.v21-title-row .pink { line-height:.9; }
-.v21-topbar { justify-content:flex-end; }
-.v21-title .pink { color:#ff4fa3; display:block; font-family:'Oswald',sans-serif; font-size:82px; font-weight:900; letter-spacing:-2px; }
+.v21-manager { display:flex; gap:10px; align-items:center; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.20); border-radius:18px; padding:10px 14px; font-weight:900; white-space:nowrap; }
+.v21-title { font-family:'Oswald',sans-serif; font-size:82px; line-height:.90; font-weight:900; letter-spacing:-2px; text-shadow:0 10px 34px rgba(0,0,0,.48); }
+.v21-title .pink { color:#ff4fa3; display:block; }
 .v21-sub { margin-top:16px; font-size:18px; line-height:1.35; color:rgba(255,255,255,.88); font-weight:700; max-width:440px; }
 .v21-cta-row { display:flex; flex-wrap:wrap; gap:12px; margin-top:22px; }
 .v21-cta { display:inline-flex; align-items:center; gap:10px; border-radius:14px; padding:12px 20px; font-weight:900; color:white; background:linear-gradient(135deg,#ff4fa3,#e91e73); box-shadow:0 0 24px rgba(233,30,115,.45); }
@@ -1549,7 +1800,7 @@ button[kind="secondary"] {
 .v21-action-card { margin-top:10px; }
 .v21-action-card .stButton > button { border-radius:999px; font-weight:900; border:1px solid rgba(255,255,255,.22); background:#E91E73; color:white; }
 .v21-action-card .stButton > button:hover { background:#ff4fa3; color:white; border-color:#ff4fa3; }
-@media(max-width:1100px){ .v21-home-grid{grid-template-columns:repeat(2,1fr);} .v21-title .pink{font-size:58px;} .v21-title-logo{width:min(300px,72vw);} }
+@media(max-width:1100px){ .v21-home-grid{grid-template-columns:repeat(2,1fr);} .v21-title{font-size:58px;} .v21-topbar{left:24px; right:24px; max-width:none;} .v21-hero-copy{left:24px; right:24px; bottom:24px; max-width:none;} }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1616,12 +1867,20 @@ def player_card(p, priority=None, captain=False, allstar=False, compact=False):
             border:1px solid #e5e7eb;
             box-shadow:0 10px 22px rgba(15,23,42,.16);
             text-align:center;
-            animation:pop .42s cubic-bezier(.2,1.5,.4,1) both;
-            animation-delay:{delay:.2f}s;
+            animation:pop .32s cubic-bezier(.2,1.2,.4,1) both;
+            animation-delay:0s;
+            -webkit-transform:translateZ(0);
+            transform:translateZ(0);
+            backface-visibility:hidden;
+            -webkit-backface-visibility:hidden;
+        }}
+        .player-card, .player-card * {{
+            filter:none !important;
+            -webkit-filter:none !important;
         }}
         @keyframes pop {{
-            0% {{ transform:translateY(18px) scale(.86); opacity:0; filter:blur(2px); }}
-            100% {{ transform:translateY(0) scale(1); opacity:1; filter:blur(0); }}
+            0% {{ transform:translateY(10px) scale(.96); opacity:.86; }}
+            100% {{ transform:translateY(0) scale(1); opacity:1; }}
         }}
         .allstar-glow {{
             border:3px solid #facc15;
@@ -1906,26 +2165,7 @@ def render_dashboard_home(players_list, games_list):
         standing_lines = "<p>아직 순위가 없습니다.</p>"
     home_logo_html = f'<img src="{home_logo}" alt="{home}">' if home_logo else ''
     away_logo_html = f'<img src="{away_logo}" alt="{away}">' if away_logo else ''
-    wkbl_title_logo_html = f'<img class="v21-title-logo" src="{wkbl}" alt="WKBL">' if wkbl else '<div style="font-size:72px;font-weight:900;color:white;">WKBL</div>'
-
-    music_left, music_right = st.columns([4.4, 1.2])
-    with music_right:
-        render_music_controls()
-
-    st.markdown(f"""
-    <div class="v21-home" style="{bg_style}">
-      <div class="v21-topbar">
-        <div style="display:flex;gap:12px;align-items:center;">
-          <div class="v21-manager">⭐ 실시간 포인트&nbsp; {my_points:.2f}</div>
-          <div class="v21-manager">👤 {manager} 감독님, 환영합니다</div>
-        </div>
-      </div>
-      <div class="v21-title v21-title-row">{wkbl_title_logo_html}<span class="pink">Fantasy</span></div>
-      <div class="v21-sub">Build. Compete. Win.<br>카드를 뽑고, 라인업을 만들고, 매 경기 판타지 포인트로 순위를 올리세요.</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    nav_a, nav_b, nav_c = st.columns([1, 1, 4])
+    nav_a, nav_b, nav_spacer, nav_logout = st.columns([1, 1, 3, 1])
     with nav_a:
         if st.button("경기 일정", key="dash_schedule", use_container_width=True):
             st.session_state.page = "Schedule"
@@ -1934,6 +2174,23 @@ def render_dashboard_home(players_list, games_list):
         if st.button("가격 확인", key="dash_prices", use_container_width=True):
             st.session_state.page = "Prices"
             st.rerun()
+    with nav_logout:
+        if st.button("로그아웃", key="dash_logout", use_container_width=True):
+            logout_current_user()
+            st.rerun()
+
+    st.markdown(f"""
+    <div class="v21-home" style="{bg_style}">
+      <div class="v21-topbar">
+        <div class="v21-manager">⭐ 실시간 포인트&nbsp; {my_points:.2f}</div>
+        <div class="v21-manager">👤 {manager} 감독님, 환영합니다</div>
+      </div>
+      <div class="v21-hero-copy">
+        <div class="v21-title"><span>WKBL</span><span class="pink">Fantasy</span></div>
+        <div class="v21-sub">Build. Compete. Win.<br>카드를 뽑고, 라인업을 만들고,<br>매 경기 판타지 포인트로 순위를 올리세요.</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
@@ -3468,9 +3725,7 @@ def handle_query_actions():
 # =========================
 def render_splash_screen():
     splash = asset_data_url(SPLASH_BG_PATH) or asset_data_url(HERO_IMAGE_PATH)
-    splash_wkbl = asset_data_url(WKBL_LOGO_PATH)
-    splash_wkbl_logo_html = f'<img class="splash-title-logo" src="{splash_wkbl}" alt="WKBL">' if splash_wkbl else '<div style="font-size:72px;font-weight:900;color:white;">WKBL</div>'
-    bg = f"background-image: linear-gradient(90deg, rgba(2,6,23,.76), rgba(2,6,23,.20), rgba(2,6,23,.56)), url('{splash}');" if splash else "background: radial-gradient(circle at 50% 40%, #1d4ed8 0%, #020617 70%);"
+    bg = f"background-image: linear-gradient(90deg, rgba(2,6,23,.84), rgba(2,6,23,.28), rgba(2,6,23,.60)), url('{splash}');" if splash else "background: radial-gradient(circle at 50% 40%, #1d4ed8 0%, #020617 70%);"
     st.markdown(f"""
     <style>
     .splash-screen {{
@@ -3487,50 +3742,75 @@ def render_splash_screen():
         position:absolute; top:24px; right:34px; color:rgba(255,255,255,.88);
         font-weight:800; letter-spacing:.5px; font-size:16px; text-shadow:0 3px 10px rgba(0,0,0,.35);
     }}
-    .splash-title {{
-        position:absolute; left:58px; top:88px; transform:none;
-        color:white; font-weight:900; text-shadow:0 6px 30px rgba(0,0,0,.60); text-align:left; line-height:.92;
-        display:flex; flex-direction:row; align-items:flex-end; gap:14px; flex-wrap:wrap;
+    .splash-copy {{
+        position:absolute; left:42px; bottom:42px; max-width:520px;
+        z-index:3;
     }}
-    .splash-title-logo {{ width:min(220px, 34vw); max-width:100%; height:auto; object-fit:contain; filter:drop-shadow(0 10px 28px rgba(0,0,0,.45)); }}
-    .splash-title span {{ color:#E91E73; font-family:'Oswald', sans-serif; font-size:72px; font-weight:900; letter-spacing:-1px; }}
-    .start-guide {{
-        position:absolute; left:50%; bottom:120px; transform:translateX(-50%);
-        color:rgba(255,255,255,.82); font-weight:800; text-align:center;
+    .splash-title {{
+        font-family:'Oswald', sans-serif; color:white; font-size:78px; font-weight:900;
+        text-shadow:0 6px 30px rgba(0,0,0,.60); letter-spacing:-1px; text-align:left; line-height:.92;
+    }}
+    .splash-title span {{ color:#E91E73; }}
+    .splash-sub {{
+        margin-top:18px; color:rgba(255,255,255,.92); font-weight:800; font-size:19px; line-height:1.38;
+        text-shadow:0 4px 18px rgba(0,0,0,.45);
+    }}
+    @keyframes splashGlow {{
+        0% {{ box-shadow: 0 0 18px rgba(250,204,21,.24), 0 12px 36px rgba(0,0,0,.36); }}
+        50% {{ box-shadow: 0 0 32px rgba(250,204,21,.48), 0 14px 44px rgba(0,0,0,.42); }}
+        100% {{ box-shadow: 0 0 18px rgba(250,204,21,.24), 0 12px 36px rgba(0,0,0,.36); }}
+    }}
+    @keyframes splashFloat {{
+        0% {{ transform: translateX(-50%) translateY(0px); }}
+        50% {{ transform: translateX(-50%) translateY(-2px); }}
+        100% {{ transform: translateX(-50%) translateY(0px); }}
     }}
     div[data-testid="stButton"] > button:has(div), .stButton > button {{
         font-weight:900;
     }}
     .start-button-wrap {{
-        position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%); z-index: 10;
+        position: fixed; left: 50%; bottom: 52px; transform: translateX(-50%); z-index: 10;
         width: 260px;
     }}
     div[data-testid="stButton"] {{
-        position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); z-index: 30; width: 260px;
+        position: fixed; left: 50%; bottom: 58px; transform: translateX(-50%); z-index: 30; width: 280px;
     }}
     div[data-testid="stButton"] button {{
         background: linear-gradient(135deg, #111827, #020617) !important;
         color: #fff !important; border: 2px solid #facc15 !important; border-radius: 6px !important;
-        font-size: 22px !important; letter-spacing: 1px; padding: 0.9rem 1rem !important;
+        font-size: 24px !important; letter-spacing: 1px; padding: 0.95rem 1rem !important;
         box-shadow: 0 0 24px rgba(250,204,21,.38), 0 12px 36px rgba(0,0,0,.4) !important;
+        animation: splashGlow 1.9s ease-in-out infinite;
+        transition: transform .18s ease, filter .18s ease;
     }}
+    div[data-testid="stButton"] button:hover {{
+        transform: translateY(-1px);
+        filter: brightness(1.04);
+    }}
+    @media (max-width: 900px) {{
+        .splash-copy {{ left:24px; right:24px; bottom:28px; max-width:none; }}
+        .splash-title {{ font-size:56px; }}
+        .splash-sub {{ font-size:16px; line-height:1.35; }}
+        .start-guide {{ width:calc(100% - 48px); bottom:138px; }}
+    }}
+
     </style>
     <div class="splash-screen">
         <div class="splash-version">{APP_VERSION}</div>
-        <div class="splash-title">{splash_wkbl_logo_html}<span>FANTASY</span></div>
-        <div class="start-guide">START를 누르면 배경음악이 재생됩니다.</div>
+        <div class="splash-copy">
+            <div class="splash-title">WKBL<br><span>FANTASY</span></div>
+            <div class="splash-sub">Build. Compete. Win.<br>카드를 뽑고, 라인업을 만들고,<br>매 경기 판타지 포인트로 순위를 올리세요.</div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
     _, mid, _ = st.columns([3, 1.2, 3])
     with mid:
         if st.button("START", use_container_width=True):
-            st.session_state.bgm_enabled = True
             st.session_state.app_phase = "name_input"
             st.rerun()
 
 
 def render_name_input_screen():
-    render_bgm_player()
     splash = asset_data_url(SPLASH_BG_PATH) or asset_data_url(HERO_IMAGE_PATH)
     bg = f"background-image: linear-gradient(180deg, rgba(2,6,23,.72), rgba(2,6,23,.18) 42%, rgba(2,6,23,.78)), url('{splash}');" if splash else "background: linear-gradient(135deg,#020617,#064EA4,#E91E73);"
     st.markdown(f"""
@@ -3539,17 +3819,44 @@ def render_name_input_screen():
         min-height: 78vh; margin: -1rem -2.5rem 0 -2.5rem; padding: 56px 24px 24px;
         background-size: cover; background-position:center 36%; {bg}; position:relative; overflow:hidden;
     }}
-    .name-heading {{
-        text-align:center; color:white; text-shadow:0 6px 24px rgba(0,0,0,.55); margin-top:4px;
+    .name-screen::before {{
+        content:''; position:absolute; inset:0;
+        background: linear-gradient(90deg, rgba(2,6,23,.82), rgba(2,6,23,.34), rgba(233,30,115,.18));
+        pointer-events:none;
     }}
-    .name-title {{font-family:'Oswald',sans-serif;font-size:56px;font-weight:900;color:white;letter-spacing:-1px;}}
+    .name-copy {{
+        position:absolute; left:42px; bottom:42px; max-width:520px; z-index:2;
+    }}
+    .name-copy-title {{
+        font-family:'Oswald',sans-serif; font-size:78px; font-weight:900; color:#fff;
+        line-height:.92; letter-spacing:-1px; text-shadow:0 6px 30px rgba(0,0,0,.60);
+    }}
+    .name-copy-title .pink {{ color:#E91E73; }}
+    .name-copy-sub {{
+        margin-top:18px; color:rgba(255,255,255,.92); font-weight:800; font-size:19px; line-height:1.38;
+        text-shadow:0 4px 18px rgba(0,0,0,.45);
+    }}
+    .name-heading {{
+        position:relative; z-index:2; text-align:center; color:white; text-shadow:0 6px 24px rgba(0,0,0,.55); margin-top:4px;
+    }}
+    .name-title {{font-family:'Oswald',sans-serif;font-size:50px;font-weight:900;color:white;letter-spacing:-1px;}}
     .name-sub {{color:rgba(255,255,255,.86);font-weight:900;margin-top:8px;font-size:17px;}}
-    .name-bottom-spacer {{height:44vh;}}
+    .name-bottom-spacer {{height:36vh;}}
+    @media (max-width: 900px) {{
+        .name-copy {{ left:24px; right:24px; bottom:26px; max-width:none; }}
+        .name-copy-title {{ font-size:56px; }}
+        .name-copy-sub {{ font-size:16px; line-height:1.35; }}
+        .name-bottom-spacer {{ height:28vh; }}
+    }}
     </style>
     <div class="name-screen">
       <div class="name-heading">
         <div class="name-title">감독 로그인</div>
         <div class="name-sub">감독명과 패스워드로 진행 상황을 저장하고 이어서 플레이하세요.</div>
+      </div>
+      <div class="name-copy">
+        <div class="name-copy-title">WKBL<br><span class="pink">Fantasy</span></div>
+        <div class="name-copy-sub">Build. Compete. Win.<br>카드를 뽑고, 라인업을 만들고,<br>매 경기 판타지 포인트로 순위를 올리세요.</div>
       </div>
       <div class="name-bottom-spacer"></div>
     </div>
@@ -3591,7 +3898,6 @@ elif st.session_state.app_phase == "name_input":
     render_name_input_screen()
     st.stop()
 
-render_bgm_player()
 handle_query_actions()
 track_navigation_change()
 render_history_controls()
@@ -3679,11 +3985,7 @@ def render_admin_page():
                     st.error("RESET을 정확히 입력해야 합니다.")
 
     if st.button("관리자 로그아웃", use_container_width=True):
-        st.session_state.current_user_id = ""
-        st.session_state.manager_name = ""
-        st.session_state.is_admin = False
-        st.session_state.app_phase = "name_input"
-        st.session_state.page = "Home"
+        logout_current_user()
         st.rerun()
 
 # =========================
@@ -4237,22 +4539,42 @@ elif page == "Results":
         for i, item in enumerate(reversed(st.session_state.simulation_history), start=1):
             title = f"{item.get('date','')} · GW {item.get('gameweek')} Day {item.get('day')} · {item.get('match','')}"
             with st.expander(title, expanded=(i == 1)):
+                participant_records = participant_result_records(item, include_current=True)
+
                 point_rows = []
-                for team, pts in sorted(item.get("team_points", {}).items(), key=lambda x: -x[1]):
-                    point_rows.append({"Fantasy Team": team, "Game Points": f"{pts:.2f}"})
+                for rec in participant_records:
+                    point_rows.append({
+                        "Fantasy Team": rec["team"],
+                        "Game Points": "-" if rec["points"] is None else f"{rec['points']:.2f}",
+                        "Status": rec["status"],
+                    })
                 st.markdown("#### Fantasy Points")
-                st.markdown(table_html(point_rows, ["Fantasy Team", "Game Points"]), unsafe_allow_html=True)
+                st.caption("AI 자동 팀은 제외하고, League Table에 등록된 실제 참가자 결과만 표시합니다.")
+                st.markdown(table_html(point_rows, ["Fantasy Team", "Game Points", "Status"]), unsafe_allow_html=True)
 
                 st.markdown("#### 라인업 구성 보기")
                 lineup_rows = []
-                for fantasy_team, snap in item.get("lineups", {}).items():
+                for rec in participant_records:
+                    snap = rec.get("lineup") or {}
                     lineup_rows.append({
-                        "Fantasy Team": fantasy_team,
-                        "Captain": snap.get("captain", "-"),
-                        "Starting 5": " / ".join(snap.get("starting", [])),
-                        "Bench": " / ".join(snap.get("bench", [])),
+                        "Fantasy Team": rec["team"],
+                        "Captain": snap.get("captain", "-") if snap else "-",
+                        "Starting 5": " / ".join(snap.get("starting", [])) if snap else "아직 결과 미확인",
+                        "Bench": " / ".join(snap.get("bench", [])) if snap else "-",
                     })
                 st.markdown(table_html(lineup_rows, ["Fantasy Team", "Captain", "Starting 5", "Bench"]), unsafe_allow_html=True)
+
+                with st.expander("참고: 이 경기의 내부 AI 팀 결과 보기", expanded=False):
+                    ai_point_rows = []
+                    participant_names = {rec["team"] for rec in participant_records}
+                    for team, pts in sorted(item.get("team_points", {}).items(), key=lambda x: -x[1]):
+                        if team in participant_names or team == st.session_state.get("simulation_user_team"):
+                            continue
+                        ai_point_rows.append({"AI Team": team, "Game Points": f"{pts:.2f}"})
+                    if ai_point_rows:
+                        st.markdown(table_html(ai_point_rows, ["AI Team", "Game Points"]), unsafe_allow_html=True)
+                    else:
+                        st.caption("표시할 AI 팀 결과가 없습니다.")
 
                 st.markdown("#### Price Changes")
                 st.markdown(table_html(item.get("price_changes", []), ["Player", "Team", "Game Score", "Old Price", "Change", "New Price"]), unsafe_allow_html=True)
