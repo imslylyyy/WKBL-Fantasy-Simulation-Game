@@ -16,11 +16,12 @@ import unicodedata
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import calendar
+import itertools
 import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v31.8 / cross-device login storage fix"
+APP_VERSION = "Final Version v31.11 / results best lineup and UI updates"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -2234,7 +2235,7 @@ def render_dashboard_home(players_list, games_list):
     with c6:
         st.markdown(f"<div class='v21-tile'><div class='tile-icon'>📅</div><h3>Next Game</h3><div class='v21-next-logos'>{home_logo_html}<b>VS</b>{away_logo_html}</div><p>GW {gw} Day {day}<br>{date}<br>{time}<br>{venue}<br><b>{status_line}</b><br>{status_message}</p></div>", unsafe_allow_html=True)
         st.markdown("<div class='v21-action-card'>", unsafe_allow_html=True)
-        if st.button("Play", key="dash_preview", use_container_width=True):
+        if st.button("Play →", key="dash_preview", use_container_width=True, type="primary"):
             st.session_state.page = "My Team"
             st.session_state.main_flow_stage = "pack_lobby"
             st.rerun()
@@ -3198,6 +3199,121 @@ def update_league_table_from_scores():
         })
     st.session_state.simulation_league = league
 
+
+def game_row_played(row):
+    """Return True only for players who actually entered the game."""
+    minute_text = clean(row.get("minutes"))
+    if minute_text:
+        return parse_minutes(minute_text) > 0
+    return True
+
+def _best_lineup_player_label(c):
+    return f"{c.get('name','')}({c.get('team','')}, {c.get('pos','')}, FS {float(c.get('score',0.0)):.1f})"
+
+def _evaluate_today_roster(roster):
+    """Evaluate one 10-player roster without All-Star boost."""
+    backs = [c for c in roster if c.get("pos") == "Back Court"]
+    fronts = [c for c in roster if c.get("pos") == "Front Court"]
+    best = None
+    for req_b, req_f, formation in [(2, 3, "2 Back Court / 3 Front Court"), (3, 2, "3 Back Court / 2 Front Court")]:
+        if len(backs) < req_b or len(fronts) < req_f:
+            continue
+        for b_start in itertools.combinations(backs, req_b):
+            for f_start in itertools.combinations(fronts, req_f):
+                starting = list(b_start) + list(f_start)
+                starting_keys = {c["key"] for c in starting}
+                bench = [c for c in roster if c["key"] not in starting_keys]
+                captain = max(starting, key=lambda c: float(c.get("score", 0.0))) if starting else None
+                starter_points = sum(float(c.get("score", 0.0)) * STARTING_SCORE_MULTIPLIER for c in starting)
+                bench_points = sum(float(c.get("score", 0.0)) * BENCH_SCORE_MULTIPLIER for c in bench)
+                captain_bonus = float(captain.get("score", 0.0)) * STARTING_SCORE_MULTIPLIER if captain else 0.0
+                total = starter_points + bench_points + captain_bonus
+                option = {
+                    "formation": formation,
+                    "total": round(total, 2),
+                    "captain": captain,
+                    "starting": starting,
+                    "bench": bench,
+                }
+                if best is None or option["total"] > best["total"]:
+                    best = option
+    return best
+
+def compute_today_best_lineup(candidates):
+    """Recommend the best same-day lineup from actual game performers.
+
+    The recommendation uses normal scoring only:
+    Starting 5 100%, Bench 50%, Captain 2x, All-Star boost excluded.
+    """
+    by_key = {}
+    for c in candidates:
+        if c.get("pos") not in ["Back Court", "Front Court"]:
+            continue
+        if float(c.get("score", 0.0)) == 0.0 and parse_minutes(c.get("minutes", "")) <= 0:
+            continue
+        prev = by_key.get(c["key"])
+        if prev is None or float(c.get("score", 0.0)) > float(prev.get("score", 0.0)):
+            by_key[c["key"]] = c
+    pool = list(by_key.values())
+    backs_all = [c for c in pool if c.get("pos") == "Back Court"]
+    fronts_all = [c for c in pool if c.get("pos") == "Front Court"]
+
+    def prune(items):
+        score_sorted = sorted(items, key=lambda c: float(c.get("score", 0.0)), reverse=True)[:10]
+        cheap_sorted = sorted(items, key=lambda c: float(c.get("price", MIN_PRICE)))[:5]
+        merged = {}
+        for c in score_sorted + cheap_sorted:
+            merged[c["key"]] = c
+        return list(merged.values())
+
+    backs = prune(backs_all)
+    fronts = prune(fronts_all)
+
+    best = None
+    if len(backs) >= ROSTER_BACK_COUNT and len(fronts) >= ROSTER_FRONT_COUNT:
+        for b_combo in itertools.combinations(backs, ROSTER_BACK_COUNT):
+            for f_combo in itertools.combinations(fronts, ROSTER_FRONT_COUNT):
+                roster = list(b_combo) + list(f_combo)
+                total_price = sum(float(c.get("price", MIN_PRICE)) for c in roster)
+                if total_price > BUDGET_CAP + 1e-9:
+                    continue
+                evaluated = _evaluate_today_roster(roster)
+                if not evaluated:
+                    continue
+                evaluated["price"] = round(total_price, 2)
+                if best is None or evaluated["total"] > best["total"]:
+                    best = evaluated
+
+    note = "All-Star boost excluded. Captain 2x and bench 50% are included."
+    if best is None:
+        # Fallback for unusual games with too few legal position candidates or no under-cap roster.
+        fallback = sorted(pool, key=lambda c: float(c.get("score", 0.0)), reverse=True)[:STARTERS_COUNT]
+        if fallback:
+            captain = max(fallback, key=lambda c: float(c.get("score", 0.0)))
+            best = {
+                "formation": "Fallback best 5",
+                "total": round(sum(float(c.get("score", 0.0)) for c in fallback) + float(captain.get("score", 0.0)), 2),
+                "price": round(sum(float(c.get("price", MIN_PRICE)) for c in fallback), 2),
+                "captain": captain,
+                "starting": fallback,
+                "bench": [],
+            }
+            note += " Legal 10-player under-cap roster was not available, so this shows best 5 only."
+
+    if not best:
+        return {}
+
+    return {
+        "Formation": best.get("formation", ""),
+        "Recommended Score": f"{best.get('total', 0.0):.2f}",
+        "Total Price": format_price(float(best.get("price", 0.0))),
+        "Captain": _best_lineup_player_label(best.get("captain", {})) if best.get("captain") else "-",
+        "Starting 5": " / ".join(_best_lineup_player_label(c) for c in best.get("starting", [])),
+        "Bench": " / ".join(_best_lineup_player_label(c) for c in best.get("bench", [])) if best.get("bench") else "-",
+        "Note": note,
+    }
+
+
 def process_one_game(game, players_list, force_user_zero=False):
     if not st.session_state.simulation_ai_ready:
         initialize_ai_managers(players_list)
@@ -3212,6 +3328,7 @@ def process_one_game(game, players_list, force_user_zero=False):
     lookup = player_lookup(players_list)
     row_scores = {}
     price_changes = []
+    best_lineup_candidates = []
     played_keys = set()
 
     # In this version each gameday is based only on the two teams that actually play.
@@ -3227,6 +3344,8 @@ def process_one_game(game, players_list, force_user_zero=False):
             st.session_state.simulation_team_captains[fantasy_team] = ai_starting[0] if ai_starting else None
 
     for row in game["rows"]:
+        if not game_row_played(row):
+            continue
         k = player_key(row)
         played_keys.add(k)
         score = float(row.get("game_score", fantasy_score(row)))
@@ -3263,7 +3382,17 @@ def process_one_game(game, players_list, force_user_zero=False):
             "Change": f'{change:+.2f}억원',
             "New Price": format_price(new_price),
         })
+        best_lineup_candidates.append({
+            "key": k,
+            "name": display_name,
+            "team": display_team,
+            "pos": row.get("position_label", ""),
+            "score": round(score, 2),
+            "price": old_price,
+            "minutes": row.get("minutes", ""),
+        })
 
+    today_best_lineup = compute_today_best_lineup(best_lineup_candidates)
     lineups_snapshot = lineup_snapshot_for_history(players_list)
 
     game_team_points = {}
@@ -3318,7 +3447,8 @@ def process_one_game(game, players_list, force_user_zero=False):
         "team_points": game_team_points,
         "lineups": lineups_snapshot,
         "allstar_applied": allstar_was_active_for_history,
-        "price_changes": sorted(price_changes, key=lambda x: abs(float(x["Change"].replace("억원",""))), reverse=True)[:10],
+        "best_lineup": today_best_lineup,
+        "price_changes": sorted(price_changes, key=lambda x: (str(x.get("Team", "")), str(x.get("Player", "")))),
     })
     apply_market_state(players_list)
     record_price_snapshot(players_list, f"G{st.session_state.simulation_game_index + 1}")
@@ -4387,19 +4517,9 @@ elif page == "Simulation":
             use_container_width=True,
         )
     else:
-        with st.expander("Loaded schedule preview", expanded=False):
-            preview_rows = []
-            for g in games_2025_26[:15]:
-                preview_rows.append({
-                    "Game": g["game_id"],
-                    "Date": g.get("date", ""),
-                    "Time": g.get("time", ""),
-                    "GW": g["gameweek"],
-                    "Day": g["day"],
-                    "Match": game_match_label(g),
-                    "Venue": g.get("venue", ""),
-                })
-            st.markdown(table_html(preview_rows, ["Game", "Date", "Time", "GW", "Day", "Match", "Venue"]), unsafe_allow_html=True)
+        if st.button("Loaded schedule preview → 일정 달력 보기", key="sim_schedule_preview_to_calendar", use_container_width=True):
+            st.session_state.page = "Schedule"
+            st.rerun()
 
     if not st.session_state.simulation_started:
         st.info("감독명과 패스워드로 로그인하면 구독자 공개 리그에 참가합니다.")
@@ -4465,16 +4585,6 @@ elif page == "Simulation":
                         st.caption(msg)
                 elif not status["can_reveal"]:
                     st.info(status["message"])
-
-            with st.expander("Reset / restart simulation"):
-                st.caption("처음부터 다시 시작해야 할 때만 사용하세요.")
-                if st.button("Reset Simulation", use_container_width=True):
-                    st.session_state.simulation_started = False
-                    st.session_state.simulation_user_team = None
-                    st.session_state.simulation_game_no = 1
-                    st.session_state.simulation_league = []
-                    reset_simulation_runtime(players)
-                    st.rerun()
 
         elif finished:
             st.success("전체 경기 시뮬레이션이 끝났습니다.")
@@ -4564,20 +4674,29 @@ elif page == "Results":
                     })
                 st.markdown(table_html(lineup_rows, ["Fantasy Team", "Captain", "Starting 5", "Bench"]), unsafe_allow_html=True)
 
-                with st.expander("참고: 이 경기의 내부 AI 팀 결과 보기", expanded=False):
-                    ai_point_rows = []
-                    participant_names = {rec["team"] for rec in participant_records}
-                    for team, pts in sorted(item.get("team_points", {}).items(), key=lambda x: -x[1]):
-                        if team in participant_names or team == st.session_state.get("simulation_user_team"):
-                            continue
-                        ai_point_rows.append({"AI Team": team, "Game Points": f"{pts:.2f}"})
-                    if ai_point_rows:
-                        st.markdown(table_html(ai_point_rows, ["AI Team", "Game Points"]), unsafe_allow_html=True)
+                with st.expander("Today's Best Lineup", expanded=False):
+                    best = item.get("best_lineup", {}) if isinstance(item.get("best_lineup", {}), dict) else {}
+                    if best:
+                        best_rows = [
+                            {"Item": "Formation", "Value": best.get("Formation", "-")},
+                            {"Item": "Recommended Score", "Value": best.get("Recommended Score", "-")},
+                            {"Item": "Total Price", "Value": best.get("Total Price", "-")},
+                            {"Item": "Captain", "Value": best.get("Captain", "-")},
+                            {"Item": "Starting 5", "Value": best.get("Starting 5", "-")},
+                            {"Item": "Bench", "Value": best.get("Bench", "-")},
+                            {"Item": "Note", "Value": best.get("Note", "All-Star boost excluded.")},
+                        ]
+                        st.markdown(table_html(best_rows, ["Item", "Value"]), unsafe_allow_html=True)
                     else:
-                        st.caption("표시할 AI 팀 결과가 없습니다.")
+                        st.caption("이전 버전에서 처리된 경기라 추천 라인업 데이터가 없습니다. 새로 완료되는 경기부터 표시됩니다.")
 
                 st.markdown("#### Price Changes")
-                st.markdown(table_html(item.get("price_changes", []), ["Player", "Team", "Game Score", "Old Price", "Change", "New Price"]), unsafe_allow_html=True)
+                price_rows = item.get("price_changes", [])
+                if price_rows:
+                    st.caption("이 경기에 실제로 출전한 선수들의 가격 변화입니다. 미출전 선수는 제외됩니다.")
+                    st.markdown(table_html(price_rows, ["Player", "Team", "Game Score", "Old Price", "Change", "New Price"]), unsafe_allow_html=True)
+                else:
+                    st.caption("표시할 가격 변화가 없습니다.")
 
 
 elif page == "Admin":
