@@ -69,7 +69,6 @@ TEAM_LOGO_DIR = ASSET_DIR / "team_logos"
 HERO_IMAGE_PATH = ASSET_DIR / "hero.jpg"
 WKBL_LOGO_PATH = ASSET_DIR / "wkbl_logo.png"
 SPLASH_BG_PATH = ASSET_DIR / "splash_bg.jpg"
-BGM_AUDIO_PATH = ASSET_DIR / "audio" / "bgm.mp3"
 
 # Public subscriber mode settings.
 # In this prototype, user progress is stored in a local JSON file shared by all sessions
@@ -126,12 +125,6 @@ if "is_admin" not in st.session_state:
 
 if "fantasy_team_names" not in st.session_state:
     st.session_state.fantasy_team_names = []
-
-if "bgm_enabled" not in st.session_state:
-    st.session_state.bgm_enabled = False
-
-if "bgm_volume" not in st.session_state:
-    st.session_state.bgm_volume = 42
 
 if "page" not in st.session_state:
     st.session_state.page = "Home"
@@ -559,7 +552,6 @@ def logout_current_user():
     keys_to_clear = set(SAVE_STATE_KEYS) | {
         "selected_player_key", "nav_back_stack", "nav_forward_stack", "nav_last_location",
         "current_user_id", "is_admin", "login_mode",
-        "bgm_enabled", "bgm_volume", "bgm_toggle_home", "bgm_volume_slider",
     }
     for key in keys_to_clear:
         if key in st.session_state:
@@ -575,8 +567,6 @@ def logout_current_user():
     st.session_state.nav_back_stack = []
     st.session_state.nav_forward_stack = []
     st.session_state.nav_last_location = None
-    st.session_state.bgm_enabled = False
-    st.session_state.bgm_volume = 42
 
 def login_existing_user(manager_name: str, password: str):
     if is_admin_name(manager_name):
@@ -924,38 +914,6 @@ def apply_missed_games_to_session(players_list, games_list, target_index: int | 
 
 def user_fantasy_team_name():
     return st.session_state.get("manager_name", "나의 팀") or "나의 팀"
-
-def audio_data_url(path):
-    path = Path(path)
-    if not path.exists():
-        return None
-    data = base64.b64encode(path.read_bytes()).decode("utf-8")
-    mime = mimetypes.guess_type(str(path))[0] or "audio/mpeg"
-    return f"data:{mime};base64,{data}"
-
-def render_bgm_player():
-    """Play one looping BGM after the START button has been clicked, if assets/audio/bgm.mp3 exists."""
-    if not st.session_state.get("bgm_enabled"):
-        return
-    src = audio_data_url(BGM_AUDIO_PATH)
-    if not src:
-        return
-    volume = max(0, min(100, int(st.session_state.get("bgm_volume", 42)))) / 100
-    components.html(f"""
-    <audio id="wkbl-bgm" autoplay loop playsinline>
-        <source src="{src}" type="audio/mpeg">
-    </audio>
-    <script>
-    const audio = document.getElementById('wkbl-bgm');
-    if (audio) {{
-        audio.volume = {volume:.2f};
-        audio.loop = true;
-        const p = audio.play();
-        if (p !== undefined) {{ p.catch(() => {{}}); }}
-    }}
-    </script>
-    """, height=0)
-
 
 def begin_game_session(players_list, games_list, manager_name):
     """Create the user's fantasy league and enter the main game."""
@@ -1909,12 +1867,20 @@ def player_card(p, priority=None, captain=False, allstar=False, compact=False):
             border:1px solid #e5e7eb;
             box-shadow:0 10px 22px rgba(15,23,42,.16);
             text-align:center;
-            animation:pop .42s cubic-bezier(.2,1.5,.4,1) both;
-            animation-delay:{delay:.2f}s;
+            animation:pop .32s cubic-bezier(.2,1.2,.4,1) both;
+            animation-delay:0s;
+            -webkit-transform:translateZ(0);
+            transform:translateZ(0);
+            backface-visibility:hidden;
+            -webkit-backface-visibility:hidden;
+        }}
+        .player-card, .player-card * {{
+            filter:none !important;
+            -webkit-filter:none !important;
         }}
         @keyframes pop {{
-            0% {{ transform:translateY(18px) scale(.86); opacity:0; filter:blur(2px); }}
-            100% {{ transform:translateY(0) scale(1); opacity:1; filter:blur(0); }}
+            0% {{ transform:translateY(10px) scale(.96); opacity:.86; }}
+            100% {{ transform:translateY(0) scale(1); opacity:1; }}
         }}
         .allstar-glow {{
             border:3px solid #facc15;
@@ -3789,11 +3755,6 @@ def render_splash_screen():
         margin-top:18px; color:rgba(255,255,255,.92); font-weight:800; font-size:19px; line-height:1.38;
         text-shadow:0 4px 18px rgba(0,0,0,.45);
     }}
-    .start-guide {{
-        position:absolute; left:50%; bottom:136px; transform:translateX(-50%);
-        color:rgba(255,255,255,.82); font-weight:800; text-align:center;
-        animation:splashFloat 2.4s ease-in-out infinite;
-    }}
     @keyframes splashGlow {{
         0% {{ box-shadow: 0 0 18px rgba(250,204,21,.24), 0 12px 36px rgba(0,0,0,.36); }}
         50% {{ box-shadow: 0 0 32px rgba(250,204,21,.48), 0 14px 44px rgba(0,0,0,.42); }}
@@ -3840,19 +3801,16 @@ def render_splash_screen():
             <div class="splash-title">WKBL<br><span>FANTASY</span></div>
             <div class="splash-sub">Build. Compete. Win.<br>카드를 뽑고, 라인업을 만들고,<br>매 경기 판타지 포인트로 순위를 올리세요.</div>
         </div>
-        <div class="start-guide">START를 누르면 배경음악이 재생됩니다.</div>
     </div>
     """, unsafe_allow_html=True)
     _, mid, _ = st.columns([3, 1.2, 3])
     with mid:
         if st.button("START", use_container_width=True):
-            st.session_state.bgm_enabled = True
             st.session_state.app_phase = "name_input"
             st.rerun()
 
 
 def render_name_input_screen():
-    render_bgm_player()
     splash = asset_data_url(SPLASH_BG_PATH) or asset_data_url(HERO_IMAGE_PATH)
     bg = f"background-image: linear-gradient(180deg, rgba(2,6,23,.72), rgba(2,6,23,.18) 42%, rgba(2,6,23,.78)), url('{splash}');" if splash else "background: linear-gradient(135deg,#020617,#064EA4,#E91E73);"
     st.markdown(f"""
@@ -3940,7 +3898,6 @@ elif st.session_state.app_phase == "name_input":
     render_name_input_screen()
     st.stop()
 
-render_bgm_player()
 handle_query_actions()
 track_navigation_change()
 render_history_controls()
