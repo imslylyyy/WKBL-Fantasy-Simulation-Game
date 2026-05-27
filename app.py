@@ -20,7 +20,8 @@ import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v31.11 / result reveal and lineup autosave fix"
+APP_VERSION = "Final Version v31.12 / fast full-season test mode"
+# OLD_PREFIX_REMOVED = "Final Version v31.11 / result reveal and lineup autosave fix"
 
 # =========================================================
 # WKBL Fantasy Prototype
@@ -2165,7 +2166,7 @@ def header():
     """, unsafe_allow_html=True)
 
 def nav():
-    items = ["Home", "My Team", "Players", "Schedule", "Prices", "Results", "Simulation", "Help"]
+    items = ["Home", "My Team", "Players", "Schedule", "Prices", "Results", "Simulation", "Season Test", "Help"]
     if st.session_state.get("is_admin"):
         items.append("Admin")
     st.markdown('<div class="nav-wrap">', unsafe_allow_html=True)
@@ -2295,6 +2296,7 @@ def sidebar_menu():
     labels = {
         "My Team": "🏀 메인 플레이",
         "Simulation": "🎮 시뮬레이션",
+        "Season Test": "⚡ 시즌 테스트",
         "Players": "👥 선수 데이터",
         "Results": "📊 경기 결과",
         "Schedule": "📅 경기 일정",
@@ -2307,7 +2309,7 @@ def sidebar_menu():
         st.caption(f"감독: {st.session_state.get('manager_name','-')}")
         st.caption(f"버전: {APP_VERSION}")
         st.divider()
-        for page_name in ["Home", "My Team", "Players", "Schedule", "Prices", "Results", "Simulation", "Help"]:
+        for page_name in ["Home", "My Team", "Players", "Schedule", "Prices", "Results", "Simulation", "Season Test", "Help"]:
             if st.button(labels[page_name], key=f"side_{page_name}", use_container_width=True):
                 st.session_state.page = page_name
                 st.rerun()
@@ -3380,6 +3382,144 @@ def process_one_game(game, players_list, force_user_zero=False):
 
     update_league_table_from_scores()
     apply_market_state(players_list)
+
+
+def _local_apply_market_state(players_list, market_state):
+    """Apply a local market dictionary to a copied player list without touching Streamlit session state."""
+    for p in players_list:
+        k = player_key(p)
+        state = market_state.get(k)
+        if state:
+            p["current_price"] = round(float(state.get("current_price", p.get("initial_price", MIN_PRICE))), 2)
+            p["expected_score"] = round(float(state.get("expected_score", p.get("expected_score", 0.0))), 2)
+            p["last_price_change"] = round(float(state.get("last_change", 0.0)), 4)
+    return players_list
+
+
+def run_fast_full_season_test(players_list, games_list, manager_name="TEST_MANAGER", seed=2026):
+    """Run an isolated no-delay full-season test.
+
+    This function is intentionally separate from the public league state:
+    - no login DB writes
+    - no public lock/result-delay checks
+    - no user card-picking requirement
+    - no mutation of the real session's market_state/history/scoreboard
+    """
+    test_players = [dict(p) for p in players_list]
+    market_state = {}
+    for p in test_players:
+        k = player_key(p)
+        market_state[k] = {
+            "current_price": float(p.get("initial_price", MIN_PRICE)),
+            "expected_score": float(p.get("expected_score", 0.0)),
+            "last_change": 0.0,
+            "games_played_2025_26": 0,
+        }
+    _local_apply_market_state(test_players, market_state)
+
+    test_teams = [manager_name] + [f"AI_TEST_{i}" for i in range(1, 6)]
+    team_scores = {team: 0.0 for team in test_teams}
+    game_summaries = []
+    price_change_count = 0
+    missing_row_score_count = 0
+    warnings = []
+
+    for game_index, game in enumerate(games_list or []):
+        allowed = set(game_allowed_teams(game))
+        game_pool = [p for p in test_players if not allowed or p.get("team_2025_26") in allowed]
+        if not game_pool:
+            warnings.append(f"G{game_index + 1}: 선수풀이 비어 있습니다. 경기 팀 정보: {game_match_label(game)}")
+            game_pool = list(test_players)
+
+        team_rosters = {}
+        team_starting = {}
+        team_captains = {}
+        for team_idx, fantasy_team in enumerate(test_teams):
+            roster = generate_auto_roster(game_pool, seed=seed + game_index * 37 + team_idx * 11)
+            starting = auto_starting_keys(roster, test_players, "2 Back Court / 3 Front Court")
+            captain = starting[0] if starting else None
+            team_rosters[fantasy_team] = roster
+            team_starting[fantasy_team] = starting
+            team_captains[fantasy_team] = captain
+
+            roster_status = roster_report(roster, test_players)
+            starting_status = validate_starting(starting, roster, test_players, "2 Back Court / 3 Front Court")
+            if not roster_status["valid"] or not starting_status["valid"]:
+                joined = "; ".join(roster_status.get("errors", []) + starting_status.get("errors", []))
+                warnings.append(f"G{game_index + 1} {fantasy_team}: 자동 라인업 확인 필요 - {joined}")
+
+        row_scores = {}
+        for row in game.get("rows", []):
+            k = player_key(row)
+            score = float(row.get("game_score", fantasy_score(row)))
+            row_scores[k] = score
+            if k not in market_state:
+                market_state[k] = {
+                    "current_price": MIN_PRICE,
+                    "expected_score": 0.0,
+                    "last_change": 0.0,
+                    "games_played_2025_26": 0,
+                }
+                missing_row_score_count += 1
+
+            state = market_state[k]
+            old_price = float(state.get("current_price", MIN_PRICE))
+            expected = float(state.get("expected_score", 0.0))
+            new_price, change, new_expected = update_player_price(old_price, score, expected, played=True)
+            state["current_price"] = new_price
+            state["expected_score"] = new_expected
+            state["last_change"] = change
+            state["games_played_2025_26"] = int(state.get("games_played_2025_26", 0)) + 1
+            if abs(change) > 1e-12:
+                price_change_count += 1
+
+        _local_apply_market_state(test_players, market_state)
+
+        game_team_points = {}
+        for fantasy_team in test_teams:
+            roster = team_rosters.get(fantasy_team, [])
+            starting = team_starting.get(fantasy_team, [])
+            bench = [k for k in roster if k not in starting]
+            captain = team_captains.get(fantasy_team)
+
+            starter_points = sum(row_scores.get(k, 0.0) * STARTING_SCORE_MULTIPLIER for k in starting)
+            bench_points = sum(row_scores.get(k, 0.0) * BENCH_SCORE_MULTIPLIER for k in bench)
+            captain_bonus = row_scores.get(captain, 0.0) * STARTING_SCORE_MULTIPLIER if captain and captain in starting else 0.0
+            total = starter_points + bench_points + captain_bonus
+            team_scores[fantasy_team] = round(team_scores.get(fantasy_team, 0.0) + total, 2)
+            game_team_points[fantasy_team] = round(total, 2)
+
+        game_summaries.append({
+            "Game": game_index + 1,
+            "Date": game.get("date", ""),
+            "GW": game.get("gameweek", ""),
+            "Day": game.get("day", ""),
+            "Match": game_match_label(game, show_score=True),
+            "My Points": game_team_points.get(manager_name, 0.0),
+            "Best Team Points": max(game_team_points.values()) if game_team_points else 0.0,
+            "Rows": len(game.get("rows", [])),
+        })
+
+    leaderboard = []
+    for rank, (team, points) in enumerate(sorted(team_scores.items(), key=lambda item: (-item[1], item[0])), start=1):
+        leaderboard.append({
+            "Rank": rank,
+            "Team": team,
+            "Points": round(points, 2),
+        })
+
+    prices = [float(state.get("current_price", MIN_PRICE)) for state in market_state.values()]
+    return {
+        "games_processed": len(game_summaries),
+        "leaderboard": leaderboard,
+        "game_summaries": game_summaries,
+        "warnings": warnings,
+        "price_change_count": price_change_count,
+        "missing_row_score_count": missing_row_score_count,
+        "min_price": round(min(prices), 2) if prices else MIN_PRICE,
+        "max_price": round(max(prices), 2) if prices else MAX_PRICE,
+        "avg_price": round(sum(prices) / len(prices), 2) if prices else 0.0,
+    }
 
 def game_results_template():
     return (
@@ -4575,6 +4715,78 @@ elif page == "Simulation":
                 "Transfers": row["Transfers"],
             })
         st.markdown(table_html(rows, ["Rank", "Team", "Manager", "Points", "Games", "Transfers"]), unsafe_allow_html=True)
+
+elif page == "Season Test":
+    st.markdown('<div class="section-title">FAST FULL-SEASON TEST</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="panel">
+        <div class="panel-title">90경기 자동 시뮬레이션 테스트</div>
+        <div style="line-height:1.7;color:#475569;">
+            이 탭은 실제 공개 리그 진행 상황과 계정 저장 데이터를 건드리지 않는 독립 테스트 모드입니다.
+            카드 선택 없이 매 경기 자동 로스터를 생성하고, 결과 지연 시간 없이 전체 시즌을 한 번에 돌려서
+            점수 계산·캡틴 2배·벤치 50%·가격 변동 로직이 끝까지 작동하는지 확인합니다.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        summary_card("LOADED GAMES", f"{len(games_2025_26)}", "📄")
+    with c2:
+        summary_card("TARGET", "Full Season", "⚡")
+    with c3:
+        summary_card("PRICE CAP", f"±{MAX_PRICE_CHANGE_PER_GAME:.2f}억원", "📈")
+    with c4:
+        summary_card("MODE", "No Delay", "⏩")
+
+    if not game_csv_loaded:
+        st.warning("game_results_2025_26.csv가 로드되지 않아 시즌 테스트를 실행할 수 없습니다.")
+    else:
+        st.info("실행해도 현재 로그인 감독의 실제 점수, 라인업, 가격 기록, 결과 기록은 바뀌지 않습니다.")
+        t1, t2 = st.columns([1, 1])
+        with t1:
+            test_manager_name = st.text_input("테스트 감독명", value="TEST_MANAGER", max_chars=20, key="season_test_manager_name")
+        with t2:
+            test_seed = st.number_input("자동 로스터 seed", min_value=0, max_value=999999, value=2026, step=1, key="season_test_seed")
+
+        run_clicked = st.button("⚡ 한 시즌 빠르게 시뮬레이션 실행", use_container_width=True, type="primary")
+        if run_clicked:
+            result = run_fast_full_season_test(players, games_2025_26, manager_name=test_manager_name.strip() or "TEST_MANAGER", seed=int(test_seed))
+            st.session_state.fast_season_test_result = result
+            st.success(f"시즌 테스트 완료: {result['games_processed']}경기 처리")
+
+        result = st.session_state.get("fast_season_test_result")
+        if result:
+            r1, r2, r3, r4 = st.columns(4)
+            with r1:
+                summary_card("PROCESSED", f"{result.get('games_processed', 0)}", "✅")
+            with r2:
+                summary_card("WARNINGS", f"{len(result.get('warnings', []))}", "⚠️")
+            with r3:
+                summary_card("PRICE UPDATES", f"{result.get('price_change_count', 0)}", "📈")
+            with r4:
+                summary_card("PRICE RANGE", f"{result.get('min_price', 0):.2f}~{result.get('max_price', 0):.2f}", "💰", "억원")
+
+            st.markdown("### 테스트 최종 순위")
+            st.markdown(table_html(result.get("leaderboard", []), ["Rank", "Team", "Points"]), unsafe_allow_html=True)
+
+            with st.expander("경기별 테스트 결과 보기", expanded=False):
+                rows = result.get("game_summaries", [])
+                st.markdown(table_html(rows, ["Game", "Date", "GW", "Day", "Match", "My Points", "Best Team Points", "Rows"]), unsafe_allow_html=True)
+
+            warnings = result.get("warnings", [])
+            with st.expander(f"경고/확인 필요 항목 {len(warnings)}개", expanded=bool(warnings)):
+                if not warnings:
+                    st.success("자동 시즌 테스트에서 라인업 생성 관련 경고가 없었습니다.")
+                else:
+                    for msg in warnings[:200]:
+                        st.warning(msg)
+                    if len(warnings) > 200:
+                        st.caption(f"나머지 {len(warnings) - 200}개 경고는 화면 표시를 생략했습니다.")
+
+            if st.button("테스트 결과 지우기", use_container_width=True):
+                st.session_state.fast_season_test_result = None
+                st.rerun()
 
 elif page == "Results":
     st.markdown('<div class="section-title">GAME RESULTS</div>', unsafe_allow_html=True)
