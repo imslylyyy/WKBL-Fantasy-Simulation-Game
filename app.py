@@ -20,7 +20,7 @@ import pandas as pd
 
 st.set_page_config(page_title="WKBL Fantasy", page_icon="🏀", layout="wide", initial_sidebar_state="collapsed")
 
-APP_VERSION = "Final Version v31.12 / fast full-season test mode"
+APP_VERSION = "Final Version v31.13 / season test player price charts"
 # OLD_PREFIX_REMOVED = "Final Version v31.11 / result reveal and lineup autosave fix"
 
 # =========================================================
@@ -3424,6 +3424,34 @@ def run_fast_full_season_test(players_list, games_list, manager_name="TEST_MANAG
     missing_row_score_count = 0
     warnings = []
 
+    # Test-only player price history used for the Season Test chart.
+    # This never touches the real public-league price_history in st.session_state.
+    price_meta = {
+        player_key(p): {
+            "Player": p.get("name", player_key(p)),
+            "Team": p.get("team_2025_26", ""),
+        }
+        for p in test_players
+    }
+    price_history = []
+
+    def record_test_price_snapshot(game_no, label):
+        for key, state in sorted(market_state.items(), key=lambda item: (price_meta.get(item[0], {}).get("Team", ""), price_meta.get(item[0], {}).get("Player", item[0]))):
+            meta = price_meta.get(key, {"Player": key, "Team": ""})
+            price_history.append({
+                "Game": int(game_no),
+                "Label": label,
+                "PlayerKey": key,
+                "Player": meta.get("Player", key),
+                "Team": meta.get("Team", ""),
+                "Price": round(float(state.get("current_price", MIN_PRICE)), 2),
+                "Expected Score": round(float(state.get("expected_score", 0.0)), 2),
+                "Last Change": round(float(state.get("last_change", 0.0)), 4),
+                "Games Played": int(state.get("games_played_2025_26", 0)),
+            })
+
+    record_test_price_snapshot(0, "Start")
+
     for game_index, game in enumerate(games_list or []):
         allowed = set(game_allowed_teams(game))
         game_pool = [p for p in test_players if not allowed or p.get("team_2025_26") in allowed]
@@ -3461,6 +3489,11 @@ def run_fast_full_season_test(players_list, games_list, manager_name="TEST_MANAG
                     "games_played_2025_26": 0,
                 }
                 missing_row_score_count += 1
+            if k not in price_meta:
+                price_meta[k] = {
+                    "Player": row.get("name", k),
+                    "Team": row.get("team_2025_26", ""),
+                }
 
             state = market_state[k]
             old_price = float(state.get("current_price", MIN_PRICE))
@@ -3499,6 +3532,7 @@ def run_fast_full_season_test(players_list, games_list, manager_name="TEST_MANAG
             "Best Team Points": max(game_team_points.values()) if game_team_points else 0.0,
             "Rows": len(game.get("rows", [])),
         })
+        record_test_price_snapshot(game_index + 1, f"G{game_index + 1}")
 
     leaderboard = []
     for rank, (team, points) in enumerate(sorted(team_scores.items(), key=lambda item: (-item[1], item[0])), start=1):
@@ -3513,6 +3547,7 @@ def run_fast_full_season_test(players_list, games_list, manager_name="TEST_MANAG
         "games_processed": len(game_summaries),
         "leaderboard": leaderboard,
         "game_summaries": game_summaries,
+        "price_history": price_history,
         "warnings": warnings,
         "price_change_count": price_change_count,
         "missing_row_score_count": missing_row_score_count,
@@ -4724,7 +4759,7 @@ elif page == "Season Test":
         <div style="line-height:1.7;color:#475569;">
             이 탭은 실제 공개 리그 진행 상황과 계정 저장 데이터를 건드리지 않는 독립 테스트 모드입니다.
             카드 선택 없이 매 경기 자동 로스터를 생성하고, 결과 지연 시간 없이 전체 시즌을 한 번에 돌려서
-            점수 계산·캡틴 2배·벤치 50%·가격 변동 로직이 끝까지 작동하는지 확인합니다.
+            점수 계산·캡틴 2배·벤치 50%·가격 변동 로직이 끝까지 작동하는지 확인하고, 선수별 가격 변화 그래프도 확인합니다.
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -4773,6 +4808,69 @@ elif page == "Season Test":
             with st.expander("경기별 테스트 결과 보기", expanded=False):
                 rows = result.get("game_summaries", [])
                 st.markdown(table_html(rows, ["Game", "Date", "GW", "Day", "Match", "My Points", "Best Team Points", "Rows"]), unsafe_allow_html=True)
+
+            st.markdown("### 선수별 가격 변화 그래프")
+            price_history = result.get("price_history", [])
+            if not price_history:
+                st.info("아직 표시할 테스트 가격 기록이 없습니다. 시즌 테스트를 먼저 실행해 주세요.")
+            else:
+                price_df = pd.DataFrame(price_history)
+                if not price_df.empty:
+                    price_df["PlayerLabel"] = price_df["Player"].astype(str) + " (" + price_df["Team"].astype(str) + ")"
+                    team_options = ["All"] + sorted([x for x in price_df["Team"].dropna().astype(str).unique().tolist() if x])
+                    pc1, pc2 = st.columns([1, 2])
+                    with pc1:
+                        selected_price_team = st.selectbox("팀 필터", team_options, key="season_test_price_team_filter")
+                    filtered_price_df = price_df if selected_price_team == "All" else price_df[price_df["Team"] == selected_price_team]
+                    player_key_order = (
+                        filtered_price_df[["PlayerKey", "PlayerLabel"]]
+                        .drop_duplicates()
+                        .sort_values("PlayerLabel")
+                    )
+                    label_map = dict(zip(player_key_order["PlayerKey"], player_key_order["PlayerLabel"]))
+                    player_options = player_key_order["PlayerKey"].tolist()
+                    if player_options:
+                        with pc2:
+                            selected_price_player = st.selectbox(
+                                "선수 선택",
+                                player_options,
+                                format_func=lambda k: label_map.get(k, k),
+                                key="season_test_price_player_select",
+                            )
+                        player_price_df = (
+                            price_df[price_df["PlayerKey"] == selected_price_player]
+                            .sort_values("Game")
+                            .copy()
+                        )
+                        chart_df = player_price_df[["Game", "Price"]].set_index("Game")
+                        st.line_chart(chart_df, use_container_width=True)
+
+                        start_price = float(player_price_df.iloc[0]["Price"])
+                        final_price = float(player_price_df.iloc[-1]["Price"])
+                        min_player_price = float(player_price_df["Price"].min())
+                        max_player_price = float(player_price_df["Price"].max())
+                        games_played = int(player_price_df.iloc[-1].get("Games Played", 0))
+                        s1, s2, s3, s4 = st.columns(4)
+                        with s1:
+                            summary_card("START", format_price(start_price), "🏁")
+                        with s2:
+                            summary_card("FINAL", format_price(final_price), "💰")
+                        with s3:
+                            summary_card("CHANGE", f"{final_price - start_price:+.2f}억원", "📈")
+                        with s4:
+                            summary_card("PLAYED", f"{games_played}", "🏀")
+                        st.caption(f"테스트 중 가격 범위: {format_price(min_player_price)} ~ {format_price(max_player_price)}")
+
+                        with st.expander("선수별 최종 가격 표 보기", expanded=False):
+                            final_game = int(price_df["Game"].max())
+                            final_rows_df = (
+                                price_df[price_df["Game"] == final_game][["Player", "Team", "Price", "Expected Score", "Last Change", "Games Played"]]
+                                .sort_values(["Team", "Price", "Player"], ascending=[True, False, True])
+                            )
+                            final_rows = final_rows_df.to_dict("records")
+                            st.markdown(table_html(final_rows, ["Player", "Team", "Price", "Expected Score", "Last Change", "Games Played"]), unsafe_allow_html=True)
+                    else:
+                        st.info("선택한 팀에 표시할 선수가 없습니다.")
 
             warnings = result.get("warnings", [])
             with st.expander(f"경고/확인 필요 항목 {len(warnings)}개", expanded=bool(warnings)):
