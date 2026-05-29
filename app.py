@@ -304,9 +304,9 @@ def normalize_source_dataframe(df, season_label="", source_label="", part_hint="
 
     stat_cols = {
         "pts": find_col(df, ["pts", "points", "득점", "점수", "평균득점"]),
-        "reb": find_col(df, ["reb", "tot", "totalreb", "리바운드", "총리바운드", "평균리바운드"]),
-        "oreb": find_col(df, ["oreb", "off", "offreb", "공격리바운드", "공격"]),
-        "dreb": find_col(df, ["dreb", "def", "defreb", "수비리바운드", "수비"]),
+        "reb": find_col(df, ["reb", "tot", "totalreb", "totalrebound", "totalrebounds", "총리바운드", "평균리바운드", "리바운드"]),
+        "oreb": find_col(df, ["oreb", "off", "offreb", "offensiverebound", "offensiverebounds", "공격리바운드", "공격"]),
+        "dreb": find_col(df, ["dreb", "def", "defreb", "defensiverebound", "defensiverebounds", "수비리바운드", "수비"]),
         "ast": find_col(df, ["ast", "assist", "어시스트", "평균어시스트"]),
         "stl": find_col(df, ["stl", "steal", "스틸", "평균스틸"]),
         "blk": find_col(df, ["blk", "block", "bs", "블록", "블록슛", "평균블록"]),
@@ -319,6 +319,24 @@ def normalize_source_dataframe(df, season_label="", source_label="", part_hint="
         "fta": find_col(df, ["fta", "자유투시도"]),
         "gooddef": find_col(df, ["gooddef", "gd", "굿디펜스", "공헌도"]),
     }
+    # Guard against a subtle but important parsing bug:
+    # a broad total-rebound candidate such as "리바운드" can accidentally match
+    # "공격리바운드" or "수비리바운드" during fuzzy column matching.  In that case
+    # total REB must be rebuilt from OREB + DREB instead of counting only one side.
+    reb_col_norm = _norm_col(stat_cols.get("reb")) if stat_cols.get("reb") else ""
+    oreb_col_norm = _norm_col(stat_cols.get("oreb")) if stat_cols.get("oreb") else ""
+    dreb_col_norm = _norm_col(stat_cols.get("dreb")) if stat_cols.get("dreb") else ""
+    reb_is_total_like = any(x in reb_col_norm for x in ["총", "tot", "total"])
+    reb_is_split_col = (
+        reb_col_norm
+        and not reb_is_total_like
+        and (
+            reb_col_norm in {oreb_col_norm, dreb_col_norm}
+            or any(x in reb_col_norm for x in ["공격", "off", "oreb", "수비", "def", "dreb"])
+        )
+    )
+    if reb_is_split_col:
+        stat_cols["reb"] = None
     pair_2p_col = find_col(df, ["2PM-A", "2PMA", "2P-A", "2점슛"])
     pair_3p_col = find_col(df, ["3PM-A", "3PMA", "3P-A", "3점슛"])
     pair_ft_col = find_col(df, ["FTM-A", "FTMA", "FT-A", "자유투"])
@@ -366,8 +384,12 @@ def normalize_source_dataframe(df, season_label="", source_label="", part_hint="
             if made or att:
                 rec["ftm"], rec["fta"] = made, att
 
-        if not rec["reb"] and (rec["oreb"] or rec["dreb"]):
-            rec["reb"] = float(rec["oreb"] or 0) + float(rec["dreb"] or 0)
+        split_reb_total = float(rec["oreb"] or 0) + float(rec["dreb"] or 0)
+        # Total rebounds should mean offensive + defensive rebounds.  If a fuzzy
+        # import accidentally put only OREB or only DREB into rec["reb"], the sum
+        # is larger, so we repair it here.
+        if split_reb_total > 0 and (not rec["reb"] or float(rec["reb"] or 0) < split_reb_total - 1e-9):
+            rec["reb"] = split_reb_total
         if not rec["dreb"] and rec["reb"] and rec["oreb"]:
             rec["dreb"] = max(float(rec["reb"]) - float(rec["oreb"]), 0.0)
 
@@ -620,8 +642,12 @@ def calculate_overall_ratings(records, stat_mode="자동 판단"):
         reb_pg = stat_pg(row, "reb", stat_mode)
         oreb_pg = stat_pg(row, "oreb", stat_mode)
         dreb_pg = stat_pg(row, "dreb", stat_mode)
-        if not reb_pg and (oreb_pg or dreb_pg):
-            reb_pg = oreb_pg + dreb_pg
+        split_reb_pg = oreb_pg + dreb_pg
+        # Use total rebounds, not just offensive rebounds.  When both split
+        # rebound values exist, their sum is the safest total; it also fixes
+        # imported tables where the total REB column was mis-detected as OREB.
+        if split_reb_pg > 0 and (not reb_pg or reb_pg < split_reb_pg - 1e-9):
+            reb_pg = split_reb_pg
         ast_pg = stat_pg(row, "ast", stat_mode)
         stl_pg = stat_pg(row, "stl", stat_mode)
         blk_pg = stat_pg(row, "blk", stat_mode)
